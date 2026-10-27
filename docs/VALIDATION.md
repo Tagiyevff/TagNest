@@ -295,8 +295,7 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
   billing, provider-specific quirks — were not tested, because no direct API key was available.
 - **Installing the NSIS package.** The installer was built successfully and the packaged
   `win-unpacked` app was launched and verified, but the installer itself was not run, so the
-  install/uninstall flow is untested. It is unsigned and uses Electron's default icon, so Windows
-  SmartScreen will warn.
+  install/uninstall flow is untested. It is unsigned, so Windows SmartScreen will warn.
 - **A prebuilt, downloadable TagNest Linux image.** The repository supports bundling a verified base
   image (`resources/linux/*.qcow2`, via `npm run provision:linux`) and can copy it into the data
   directory, but no such image is checked in or hosted here. As shipped in this repo, the first
@@ -312,3 +311,26 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
 - **macOS and Linux hosts.** Only Windows was tested.
 - **Security auditing.** Isolation was checked behaviourally (no host mounts, NAT-only). No pen-test
   or QEMU-escape analysis was performed.
+
+## Release pipeline
+
+The published repository was tagged `v0.1.0`, which triggered the `Release` workflow on
+`windows-latest`. Steps that actually ran and passed:
+
+```text
+npm ci                     OK
+npm run typecheck          OK
+npm run lint               OK
+npm test                   4 files, 36 tests passed
+npm run package:win        OK
+```
+
+The release asset list from the GitHub API, after the run:
+
+```text
+TagNest-0.1.0-x64.exe           118.8 MB
+TagNest-0.1.0-x64.exe.blockmap    0.1 MB
+```
+
+Not verified: downloading that asset and installing it on a clean Windows machine, and code
+signing (the installer is unsigned).
