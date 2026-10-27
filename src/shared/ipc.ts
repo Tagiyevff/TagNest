@@ -1,0 +1,78 @@
+import { z } from 'zod'
+import type { AppSettings, Language, ProviderId } from './types'
+
+export { IPC } from './channels'
+
+export const PROVIDER_IDS: [ProviderId, ...ProviderId[]] = [
+  'openai',
+  'anthropic',
+  'gemini',
+  'openrouter',
+  'ollama',
+  'custom'
+]
+
+export const languageSchema = z.enum(['en', 'az'])
+
+export const settingsPatchSchema = z
+  .object({
+    provider: z.enum(PROVIDER_IDS).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+    baseUrl: z.string().trim().max(500).optional(),
+    language: languageSchema.optional(),
+    memoryMB: z.number().int().min(1024).max(16384).optional(),
+    cpus: z.number().int().min(1).max(8).optional(),
+    diskGB: z.number().int().min(8).max(128).optional(),
+    autoStartLinux: z.boolean().optional(),
+    approveSafeCommands: z.boolean().optional()
+  })
+  .strict()
+
+export type SettingsPatch = z.infer<typeof settingsPatchSchema>
+
+export const setApiKeySchema = z
+  .object({
+    provider: z.enum(PROVIDER_IDS),
+    apiKey: z.string().min(1).max(4096)
+  })
+  .strict()
+
+export const providerOnlySchema = z.object({ provider: z.enum(PROVIDER_IDS) }).strict()
+
+export const idSchema = z.object({ id: z.string().min(1).max(120) }).strict()
+
+export const sendMessageSchema = z
+  .object({
+    conversationId: z.string().min(1).max(120).optional(),
+    text: z.string().min(1).max(20000)
+  })
+  .strict()
+
+export const approvalResponseSchema = z
+  .object({
+    requestId: z.string().min(1).max(120),
+    approved: z.boolean()
+  })
+  .strict()
+
+export const retrySchema = z.object({ conversationId: z.string().min(1).max(120) }).strict()
+
+export const activeConversationSchema = z
+  .object({ id: z.string().min(1).max(120).nullable() })
+  .strict()
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  provider: 'openai',
+  model: 'gpt-4.1-mini',
+  baseUrl: '',
+  language: 'en',
+  memoryMB: 3072,
+  cpus: 2,
+  diskGB: 20,
+  autoStartLinux: true,
+  approveSafeCommands: true
+}
+
+export function isLanguage(value: string | undefined): value is Language {
+  return value === 'en' || value === 'az'
+}

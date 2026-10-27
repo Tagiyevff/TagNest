@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+release/
+
+# Logs
+*.log
+logs/
+
+# Local scratch space, test workspaces and captured screenshots
+.local/
+screenshots/
+.tagnest-data/
+tagnest.png
+
+# Secrets and environment files — never commit these
+.env
+.env.*
+!.env.example
+secrets.json
+
+# VM artifacts: downloaded or generated, never versioned
+*.qcow2
+*.iso
+resources/qemu/
+resources/linux/*.qcow2
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Freebuff desktop project marker
+.freebuff/

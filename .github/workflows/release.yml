@@ -1,0 +1,93 @@
+name: Release
+
+# Builds the Windows installer and attaches it to a GitHub Release.
+#
+# A tag push is the only thing that publishes:
+#   npm version 0.1.1 --no-git-tag-version   (or edit package.json)
+#   git commit -am "release: 0.1.1"
+#   git tag v0.1.1 && git push origin main --tags
+#
+# `workflow_dispatch` builds the installer and uploads it as a workflow artifact
+# without creating a Release, which is useful for testing packaging changes.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows x64 installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build installer
+        run: npm run package:win
+        env:
+          # electron-builder downloads its NSIS/code-sign helpers from GitHub;
+          # the token only raises the rate limit. No signing certificate is used,
+          # so the installer is unsigned and SmartScreen will warn.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp -v release/*.exe artifacts/ 2>/dev/null || echo "no .exe found"
+          cp -v release/*.blockmap artifacts/ 2>/dev/null || true
+          ls -lh artifacts
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TagNest-windows-x64
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Attach installer to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            TagNest ${{ github.ref_name }} — Windows installer (x64).
+
+            **Before you install:** TagNest needs QEMU on the host.
+
+            ```powershell
+            winget install SoftwareFreedomConservancy.QEMU
+            ```
+
+            Then run `TagNest-*.exe`, open Settings and add a model provider key
+            (or point it at a local Ollama server). The first launch downloads the
+            Alpine base image and provisioned desktop — expect a few minutes and
+            about 250 MB of downloads; later launches boot straight to the desktop.
+
+            The installer is unsigned, so Windows SmartScreen will warn. See the
+            README for what works and the known limitations.

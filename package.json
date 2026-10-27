@@ -1,0 +1,105 @@
+{
+  "name": "tagnest",
+  "version": "0.1.0",
+  "description": "TagNest — a local-first AI workspace with a real embedded Linux desktop",
+  "main": "./out/main/index.js",
+  "author": "TagNest contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/Tagiyevff/TagNest#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tagiyevff/TagNest.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Tagiyevff/TagNest/issues"
+  },
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "smoke:linux": "tsx scripts/smoke-linux.mts",
+    "smoke:agent": "tsx scripts/agent-smoke.ts",
+    "provision:linux": "tsx scripts/provision-image.ts",
+    "package:win": "npm run build && electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "@novnc/novnc": "^1.7.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ssh2": "^1.15.6",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "jsdom": "^26.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  },
+  "build": {
+    "appId": "dev.tagnest.app",
+    "productName": "TagNest",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },      "files": [
+        "out/**/*",
+        "package.json",
+        "!**/*.map"
+      ],
+      "extraResources": [
+        {
+          "from": "resources",
+          "to": ".",
+          "filter": [
+            "**/*",
+            "!qemu/**"
+          ]
+        },
+        {
+          "from": "build/icon.png",
+          "to": "icon.png"
+        }
+      ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "TagNest-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "npmRebuild": false
+  },
+  "allowScripts": {
+    "electron@45.0.0": true,
+    "esbuild@0.28.2": true,
+    "ssh2@1.17.0": true,
+    "cpu-features@0.0.10": true,
+    "electron-winstaller@5.4.0": true
+  }
+}

@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.qcow2 binary
+*.exe binary
+*.dll binary
+*.node binary
+
+package-lock.json text eol=lf
