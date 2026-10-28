@@ -3,7 +3,7 @@
 **A local-first AI workspace with a real Linux desktop inside it.**
 
 [![CI](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml/badge.svg)](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c)](https://github.com/Tagiyevff/TagNest/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c&v=0.2.0)](https://github.com/Tagiyevff/TagNest/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-11181c.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-11181c)](README.md#requirements)
 
