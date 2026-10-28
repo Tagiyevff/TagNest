@@ -61,6 +61,28 @@ export const activeConversationSchema = z
   .object({ id: z.string().min(1).max(120).nullable() })
   .strict()
 
+export const workspaceListSchema = z
+  .object({ path: z.string().max(500).optional() })
+  .strict()
+
+const uploadFileSchema = z
+  .object({
+    name: z.string().min(1).max(255),
+    relativePath: z.string().min(1).max(1024).optional(),
+    data: z.instanceof(Uint8Array)
+  })
+  .strict()
+
+export const workspaceUploadSchema = z
+  .object({
+    files: z.array(uploadFileSchema).max(200).optional(),
+    hostPaths: z.array(z.string().min(1).max(4096)).max(200).optional(),
+    pick: z.boolean().optional()
+  })
+  .strict()
+
+export const workspaceDownloadSchema = z.object({ path: z.string().min(1).max(500) }).strict()
+
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'openai',
   model: 'gpt-4.1-mini',

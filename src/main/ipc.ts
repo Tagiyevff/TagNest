@@ -1,4 +1,4 @@
-import { ipcMain, shell, type BrowserWindow } from 'electron'
+import { app, ipcMain, shell, type BrowserWindow } from 'electron'
 import {
   activeConversationSchema,
   approvalResponseSchema,
@@ -8,7 +8,10 @@ import {
   retrySchema,
   sendMessageSchema,
   setApiKeySchema,
-  settingsPatchSchema
+  settingsPatchSchema,
+  workspaceDownloadSchema,
+  workspaceListSchema,
+  workspaceUploadSchema
 } from '../shared/ipc'
 import type { AgentEvent, AppSnapshot } from '../shared/types'
 import type { AgentRuntime } from './agent/agent'
@@ -17,6 +20,15 @@ import type { ConversationStore } from './storage/conversations'
 import type { SecretsStore } from './storage/secrets'
 import type { SettingsStore } from './storage/settings'
 import { logger } from './logger'
+import { testProviderConnection } from './agent/provider-test'
+import { checkForUpdates } from './updates'
+import {
+  downloadWorkspaceFile,
+  listWorkspace,
+  pickAndUploadFiles,
+  uploadBuffers,
+  uploadHostPaths
+} from './workspace/files'
 
 export interface IpcDependencies {
   window: BrowserWindow
@@ -35,6 +47,7 @@ export function registerIpc(deps: IpcDependencies): void {
   }
 
   const snapshot = (): AppSnapshot => ({
+    version: app.getVersion(),
     settings: settings.getView(),
     runtime: runtime.getState(),
     conversations: conversations.list(),
@@ -139,6 +152,31 @@ export function registerIpc(deps: IpcDependencies): void {
   })
 
   ipcMain.handle(IPC.runtimeLogs, async () => runtime.getLogs())
+
+  ipcMain.handle(IPC.runtimeStats, async () => runtime.getStats())
+
+  ipcMain.handle(IPC.workspaceList, async (_event, raw: unknown) => {
+    const { path } = workspaceListSchema.parse(raw ?? {})
+    return listWorkspace(runtime.getGuest(), path)
+  })
+
+  ipcMain.handle(IPC.workspaceUpload, async (_event, raw: unknown) => {
+    const input = workspaceUploadSchema.parse(raw)
+    const guest = runtime.getGuest()
+    if (input.pick) return pickAndUploadFiles(guest, window)
+    if (input.hostPaths?.length) return uploadHostPaths(guest, input.hostPaths)
+    if (input.files?.length) return uploadBuffers(guest, input.files)
+    throw new Error('No files were provided to copy into Linux.')
+  })
+
+  ipcMain.handle(IPC.workspaceDownload, async (_event, raw: unknown) => {
+    const { path } = workspaceDownloadSchema.parse(raw)
+    return downloadWorkspaceFile(runtime.getGuest(), path, window)
+  })
+
+  ipcMain.handle(IPC.providerTest, async () => testProviderConnection(settings, secrets))
+
+  ipcMain.handle(IPC.appCheckUpdates, async () => checkForUpdates(app.getVersion()))
 
   ipcMain.handle(IPC.appOpenLogs, async () => {
     const result = await shell.openPath(runtime.getLogsDirectory())

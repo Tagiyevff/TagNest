@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent, type JSX } from 'react'
 import type RFBType from '@novnc/novnc'
 import type { RFBClipboardEvent } from '@novnc/novnc'
-import type { RuntimePhase, RuntimeState, TaskState } from '@shared/types'
+import type { GuestStats, RuntimePhase, RuntimeState, TaskState, WorkspaceListing } from '@shared/types'
 import { DESKTOP_HEIGHT, DESKTOP_WIDTH } from '@shared/constants'
 import type { Translate } from '../i18n'
 import { Icon } from './Icon'
@@ -31,6 +31,14 @@ const PHASE_KEYS: Record<RuntimePhase, Parameters<Translate>[0]> = {
 }
 
 const BUSY_TASK_STATES = new Set(['planning', 'running', 'waiting-approval', 'cancelling'])
+const MAX_DROP_FILES = 200
+const MAX_DROP_BYTES = 64 * 1024 * 1024
+
+interface DroppedFile {
+  name: string
+  relativePath: string
+  data: Uint8Array
+}
 
 export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
   const { t, runtime, task } = props
@@ -49,6 +57,14 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
   const [clipboardError, setClipboardError] = useState('')
   const [screenRect, setScreenRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [stats, setStats] = useState<GuestStats | null>(null)
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [listing, setListing] = useState<WorkspaceListing | null>(null)
+  const [filesBusy, setFilesBusy] = useState(false)
+  const [filesError, setFilesError] = useState('')
+  const [filesNotice, setFilesNotice] = useState('')
+  const [dropActive, setDropActive] = useState(false)
+  const dragDepth = useRef(0)
 
   const aiWorking = BUSY_TASK_STATES.has(task.status)
   const phase = runtime.phase
@@ -128,6 +144,33 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
     return () => clearTimeout(timer)
   }, [props.pointer])
 
+  // Live guest readings. Polling only happens while the VM is running and the
+  // main process caches results, so this cannot become a busy SSH loop.
+  useEffect(() => {
+    if (phase !== 'running') return
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      try {
+        const value = await window.tagnest.runtime.stats()
+        if (!cancelled) setStats(value)
+      } catch {
+        if (!cancelled) setStats(null)
+      }
+    }
+    void load()
+    const timer = setInterval(() => void load(), 5000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [phase])
+
+  useEffect(() => {
+    if (!filesNotice) return
+    const timer = setTimeout(() => setFilesNotice(''), 7000)
+    return () => clearTimeout(timer)
+  }, [filesNotice])
+
   // Map guest pixels onto the exact letterboxed canvas area of the VNC view.
   useEffect(() => {
     const update = (): void => {
@@ -188,6 +231,112 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
     }
   }
 
+  const loadFiles = useCallback(async (path?: string): Promise<void> => {
+    setFilesBusy(true)
+    setFilesError('')
+    try {
+      const next = await window.tagnest.files.list(path)
+      setListing(next)
+    } catch (error) {
+      setFilesError(cleanPanelError(error))
+    } finally {
+      setFilesBusy(false)
+    }
+  }, [])
+
+  const toggleFiles = (): void => {
+    const next = !filesOpen
+    setFilesOpen(next)
+    // Refresh on every open: the agent may have changed files in the guest
+    // since the drawer was last shown.
+    if (next) void loadFiles(listing?.path)
+  }
+
+  const saveFile = async (path: string): Promise<void> => {
+    setFilesError('')
+    try {
+      const result = await window.tagnest.files.download(path)
+      if (result.canceled) return
+      if (!result.ok) {
+        setFilesError(result.error ?? t('downloadFile'))
+        return
+      }
+      if (result.path) setFilesNotice(t('downloadDone', { path: result.path }))
+    } catch (error) {
+      setFilesError(cleanPanelError(error))
+    }
+  }
+
+  const pickUpload = async (): Promise<void> => {
+    setFilesBusy(true)
+    setFilesError('')
+    try {
+      const result = await window.tagnest.files.upload({ pick: true })
+      if (result.canceled) return
+      if (result.uploaded > 0) setFilesNotice(t('copyDone', { count: result.uploaded }))
+      if (result.skipped > 0) {
+        setFilesError(result.files.find((file) => !file.ok)?.error ?? t('copySkipped', { count: result.skipped }))
+      }
+      if (listing) await loadFiles(listing.path)
+    } catch (error) {
+      setFilesError(cleanPanelError(error))
+    } finally {
+      setFilesBusy(false)
+    }
+  }
+
+  const dropFiles = async (files: DroppedFile[]): Promise<void> => {
+    if (files.length === 0) return
+    setFilesBusy(true)
+    setFilesError('')
+    try {
+      const result = await window.tagnest.files.upload({ files })
+      if (result.uploaded > 0) setFilesNotice(t('copyDone', { count: result.uploaded }))
+      if (result.skipped > 0) {
+        setFilesError(result.files.find((file) => !file.ok)?.error ?? t('copySkipped', { count: result.skipped }))
+      }
+      if (filesOpen) await loadFiles(listing?.path)
+    } catch (error) {
+      setFilesError(cleanPanelError(error))
+    } finally {
+      setFilesBusy(false)
+    }
+  }
+
+  const onDragEnter = (event: DragEvent<HTMLElement>): void => {
+    if (phase !== 'running' || !event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    dragDepth.current += 1
+    setDropActive(true)
+  }
+
+  const onDragOver = (event: DragEvent<HTMLElement>): void => {
+    if (phase !== 'running' || !event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const onDragLeave = (event: DragEvent<HTMLElement>): void => {
+    event.preventDefault()
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDropActive(false)
+  }
+
+  const onDrop = (event: DragEvent<HTMLElement>): void => {
+    if (phase !== 'running') return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDropActive(false)
+    void (async () => {
+      try {
+        const files = await collectDroppedFiles(event.dataTransfer)
+        await dropFiles(files)
+      } catch (error) {
+        setFilesError(cleanPanelError(error))
+      }
+    })()
+  }
+
   const openLogs = async (): Promise<void> => {
     setLogsOpen(true)
     setLogsLoading(true)
@@ -200,6 +349,19 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
       setLogsLoading(false)
     }
   }
+
+  // Derived, never stored: a stopped VM must not show the last reading.
+  const visibleStats = phase === 'running' ? stats : null
+  const drawerOpen = filesOpen && phase === 'running'
+  const ramPercent = visibleStats ? Math.round((visibleStats.memoryUsedMB / visibleStats.memoryTotalMB) * 100) : null
+  const diskPercent = visibleStats ? Math.round((visibleStats.diskUsedGB / visibleStats.diskTotalGB) * 100) : null
+  const statsTitle = visibleStats
+    ? `${t('statsTitle')} · ${(visibleStats.memoryUsedMB / 1024).toFixed(1)} / ${(
+        visibleStats.memoryTotalMB / 1024
+      ).toFixed(1)} GB ${t('statsMemory')} · ${visibleStats.diskUsedGB.toFixed(1)} / ${visibleStats.diskTotalGB.toFixed(
+        0
+      )} GB ${t('statsDisk')} · ${t('statsLoad')} ${visibleStats.load1.toFixed(2)}`
+    : undefined
 
   const pointer = props.pointer
   const pointerFresh = pointer && now - pointer.at < 7000
@@ -230,6 +392,16 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
               {runtime.cpus} CPU
               <span className="stage-sep">·</span>
               {Math.round(runtime.memoryMB / 1024)} GB
+              {ramPercent !== null && diskPercent !== null ? (
+                <>
+                  <span className="stage-sep">·</span>
+                  <span className="stage-stats" title={statsTitle}>
+                    {t('statsMemory')} {ramPercent}%
+                    <span className="stage-sep">·</span>
+                    {t('statsDisk')} {diskPercent}%
+                  </span>
+                </>
+              ) : null}
             </span>
           </div>
           <span className={`stage-dot ${phase === 'running' ? 'online' : ''}`} />
@@ -263,6 +435,15 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
           >
             <Icon name="restart" />
           </button>
+          <button
+            type="button"
+            className="icon-button stage-icon"
+            onClick={toggleFiles}
+            title={t('filesTitle')}
+            disabled={phase !== 'running'}
+          >
+            <Icon name="folder" />
+          </button>
           <div className="clipboard-wrap">
             <button
               type="button"
@@ -282,8 +463,29 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
         </div>
       </header>
 
-      <div className="desktop-shell">
+      <div
+        className="desktop-shell"
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <div className="desktop-host" ref={hostRef} />
+
+        {dropActive ? (
+          <div className="drop-overlay" aria-live="polite">
+            <span className="drop-mark">
+              <Icon name="upload" size={22} />
+            </span>
+            <strong>{t('dropTitle')}</strong>
+            <span>{t('dropHint')}</span>
+            <small>{t('dropLimit', { count: MAX_DROP_FILES, size: Math.round(MAX_DROP_BYTES / 1024 / 1024) })}</small>
+          </div>
+        ) : null}
+
+        {filesNotice || filesError ? (
+          <div className={`panel-toast ${filesError ? 'error' : ''}`}>{filesError || filesNotice}</div>
+        ) : null}
 
         {screen === 'connected' && hintVisible ? (
           <div className="desktop-hint">
@@ -357,6 +559,73 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
               </button>
             </div>
           </div>
+        ) : null}
+
+        {drawerOpen ? (
+          <aside className="files-drawer" aria-label={t('filesTitle')}>
+            <div className="files-head">
+              <div className="files-head-text">
+                <strong>{t('filesTitle')}</strong>
+                <span className="files-path" title={listing?.path ?? '~/workspace'}>
+                  {listing?.relative ? `~/workspace/${listing.relative}` : '~/workspace'}
+                </span>
+              </div>
+              <button type="button" className="icon-button files-close" onClick={() => setFilesOpen(false)}>
+                <Icon name="close" size={13} />
+              </button>
+            </div>
+            <div className="files-toolbar">
+              <button
+                type="button"
+                className="button ghost files-tool"
+                disabled={!listing?.parent || filesBusy}
+                onClick={() => void loadFiles(listing?.parent ?? undefined)}
+              >
+                <Icon name="chevron" size={12} /> {t('parentFolder')}
+              </button>
+              <button type="button" className="button ghost files-tool" disabled={filesBusy} onClick={() => void pickUpload()}>
+                <Icon name="upload" size={12} /> {t('uploadFiles')}
+              </button>
+              {filesBusy ? <span className="mini-spin dark" /> : null}
+            </div>
+            {filesError ? <p className="files-error">{filesError}</p> : null}
+            <div className="files-list">
+              {!listing && !filesError ? <p className="files-empty">{t('filesEmpty')}</p> : null}
+              {listing && listing.entries.length === 0 ? <p className="files-empty">{t('filesEmpty')}</p> : null}
+              {listing?.entries.map((entry) => (
+                <div key={entry.path} className={`file-row ${entry.type === 'directory' ? 'is-dir' : ''}`}>
+                  <button
+                    type="button"
+                    className="file-open"
+                    title={entry.type === 'directory' ? entry.name : t('downloadFile')}
+                    onClick={() => {
+                      if (entry.type === 'directory') void loadFiles(entry.path)
+                      else void saveFile(entry.path)
+                    }}
+                  >
+                    <span className="file-icon">
+                      <Icon name={entry.type === 'directory' ? 'folder' : 'file'} size={13} />
+                    </span>
+                    <span className="file-name">{entry.name}</span>
+                    <span className="file-meta">
+                      {entry.type === 'directory' ? '' : formatBytes(entry.size)}
+                    </span>
+                  </button>
+                  {entry.type === 'directory' ? null : (
+                    <button
+                      type="button"
+                      className="file-download"
+                      title={t('downloadFile')}
+                      onClick={() => void saveFile(entry.path)}
+                    >
+                      <Icon name="download" size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="files-foot">{t('uploadHint')}</p>
+          </aside>
         ) : null}
       </div>
 
@@ -447,4 +716,94 @@ function RuntimeOverlay({
 
 function preview(text: string): string {
   return text.length > 180 ? `${text.slice(0, 180)}…` : text
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${unit === 0 || value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+function cleanPanelError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*/, '')
+    .replace(/^Error:\s*/, '')
+}
+
+function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+  return new Promise((resolve, reject) => {
+    const all: FileSystemEntry[] = []
+    const next = (): void => {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(all)
+          return
+        }
+        all.push(...batch)
+        next()
+      }, reject)
+    }
+    next()
+  })
+}
+
+/**
+ * Reads a drag & drop payload in the renderer and returns plain bytes. No host
+ * path ever reaches the main process, so the renderer cannot ask it to read an
+ * arbitrary file by name.
+ */
+async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<DroppedFile[]> {
+  const files: DroppedFile[] = []
+  let bytes = 0
+
+  const pushFile = async (file: File, relativePath: string): Promise<void> => {
+    if (files.length >= MAX_DROP_FILES) {
+      throw new Error(`Too many files: drop at most ${MAX_DROP_FILES} at once.`)
+    }
+    const data = new Uint8Array(await file.arrayBuffer())
+    bytes += data.byteLength
+    if (bytes > MAX_DROP_BYTES) {
+      throw new Error(
+        `The drop is larger than ${Math.round(MAX_DROP_BYTES / 1024 / 1024)} MB. Use the Upload button for big files.`
+      )
+    }
+    files.push({ name: file.name, relativePath, data })
+  }
+
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) => {
+        ;(entry as FileSystemFileEntry).file(resolve, reject)
+      })
+      await pushFile(file, prefix ? `${prefix}/${file.name}` : file.name)
+      return
+    }
+    if (!entry.isDirectory) return
+    const children = await readAllEntries((entry as FileSystemDirectoryEntry).createReader())
+    for (const child of children) {
+      await walk(child, prefix ? `${prefix}/${entry.name}` : entry.name)
+    }
+  }
+
+  const items = Array.from(dataTransfer.items ?? []).filter((item) => item.kind === 'file')
+  for (const item of items) {
+    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.()
+    if (entry) {
+      await walk(entry, '')
+      continue
+    }
+    const file = item.getAsFile()
+    if (file) await pushFile(file, file.name)
+  }
+  if (items.length === 0) {
+    for (const file of Array.from(dataTransfer.files)) await pushFile(file, file.name)
+  }
+  return files
 }

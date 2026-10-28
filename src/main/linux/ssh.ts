@@ -43,6 +43,12 @@ export function shellQuote(value: string): string {
 export class GuestClient {
   private client: Client | null = null
   private connected = false
+  // sshd allows a limited number of channels per connection (MaxSessions,
+  // usually 10). Opening a fresh SFTP channel for every file operation used
+  // them up and made later calls fail with "Channel open failure", so one
+  // session is opened lazily and reused for the whole connection.
+  private sftpSession: SFTPWrapper | null = null
+  private sftpOpening: Promise<SFTPWrapper> | null = null
 
   constructor(private readonly keyPath: string) {}
 
@@ -107,18 +113,9 @@ export class GuestClient {
 
   /** Reads a guest file as raw bytes (used for screenshots). */
   async readBuffer(path: string): Promise<Buffer> {
-    const client = this.requireClient()
+    const sftp = await this.sftp()
     return new Promise<Buffer>((resolve, reject) => {
-      client.sftp((error, sftp) => {
-        if (error) {
-          reject(error)
-          return
-        }
-        sftp.readFile(path, (readError, data) => {
-          if (readError) reject(readError)
-          else resolve(data)
-        })
-      })
+      sftp.readFile(path, (error, data) => (error ? reject(error) : resolve(data)))
     })
   }
 
@@ -126,6 +123,8 @@ export class GuestClient {
     const client = this.client
     this.client = null
     this.connected = false
+    this.sftpSession = null
+    this.sftpOpening = null
     if (!client) return
     await new Promise<void>((resolve) => {
       client.once('close', () => resolve())
@@ -242,12 +241,41 @@ export class GuestClient {
   }
 
   async writeFile(path: string, content: string, mode = 0o644): Promise<void> {
+    await this.writeBuffer(path, Buffer.from(content, 'utf8'), mode)
+  }
+
+  /** Writes raw bytes (drag & drop uploads) through SFTP. */
+  async writeBuffer(path: string, data: Buffer, mode = 0o644): Promise<void> {
     const sftp = await this.sftp()
     await new Promise<void>((resolve, reject) => {
-      sftp.writeFile(path, content, { mode }, (error) => (error ? reject(error) : resolve()))
+      sftp.writeFile(path, data, { mode }, (error) => (error ? reject(error) : resolve()))
     })
     await new Promise<void>((resolve, reject) => {
       sftp.chmod(path, mode, (error) => (error ? reject(error) : resolve()))
+    })
+  }
+
+  /** Copies a host file into the guest with SFTP's fastPut (used by the file bridge). */
+  async uploadFile(localPath: string, remotePath: string, mode = 0o644): Promise<void> {
+    const sftp = await this.sftp()
+    await new Promise<void>((resolve, reject) => {
+      sftp.fastPut(localPath, remotePath, { mode }, (error) => (error ? reject(error) : resolve()))
+    })
+  }
+
+  /** Copies a guest file to the host (used by the download button). */
+  async downloadFile(remotePath: string, localPath: string): Promise<void> {
+    const sftp = await this.sftp()
+    await new Promise<void>((resolve, reject) => {
+      sftp.fastGet(remotePath, localPath, (error) => (error ? reject(error) : resolve()))
+    })
+  }
+
+  /** Resolves symlinks inside the guest so path checks cannot be bypassed. */
+  async realpath(path: string): Promise<string> {
+    const sftp = await this.sftp()
+    return new Promise<string>((resolve, reject) => {
+      sftp.realpath(path, (error, resolved) => (error ? reject(error) : resolve(resolved)))
     })
   }
 
@@ -312,10 +340,38 @@ export class GuestClient {
   }
 
   private sftp(): Promise<SFTPWrapper> {
+    if (this.sftpSession) return Promise.resolve(this.sftpSession)
+    if (this.sftpOpening) return this.sftpOpening
     const client = this.requireClient()
-    return new Promise<SFTPWrapper>((resolve, reject) => {
-      client.sftp((error, sftp) => (error ? reject(error) : resolve(sftp)))
+    this.sftpOpening = new Promise<SFTPWrapper>((resolve, reject) => {
+      client.sftp((error, sftp) => {
+        this.sftpOpening = null
+        if (error) {
+          reject(error)
+          return
+        }
+        if (this.client !== client) {
+          try {
+            sftp.end()
+          } catch {
+            /* the connection is already gone */
+          }
+          reject(new Error('The SSH connection closed before SFTP was ready.'))
+          return
+        }
+        this.sftpSession = sftp
+        const forget = (): void => {
+          if (this.sftpSession === sftp) this.sftpSession = null
+        }
+        sftp.on('close', forget)
+        sftp.on('error', (sftpError: Error) => {
+          logger.debug('ssh', 'sftp session error', sftpError.message)
+          forget()
+        })
+        resolve(sftp)
+      })
     })
+    return this.sftpOpening
   }
 
   private requireClient(): Client {

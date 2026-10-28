@@ -48,8 +48,8 @@ Building from source instead: see [Quick start (development)](#quick-start-devel
 
 ## Status
 
-Early release (`0.1.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
-settings are implemented and were exercised against a real VM. Typecheck, lint, 36 unit tests, the
+Early release (`0.2.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
+settings are implemented and were exercised against a real VM. Typecheck, lint, 64 unit tests, the
 production build and the real-VM smoke test pass. Provider adapters were tested against local mocks
 of their real HTTP APIs, and the OpenAI-compatible path was additionally driven end to end against
 a local router that forwards to a real hosted model — tool calls, file creation and read-back in the
@@ -57,6 +57,10 @@ guest all worked. The full agent loop — including web search, page fetch and o
 guest browser — was tested against a mock OpenAI-compatible server driving real guest commands and
 real internet requests. See [docs/VALIDATION.md](docs/VALIDATION.md) for the exact results, including
 what was **not** verified.
+
+`0.2.0` adds a two-way file bridge between Windows and the Linux workspace, live guest resource
+readings, a real provider connection test and an update check against GitHub Releases. See
+[CHANGELOG.md](CHANGELOG.md).
 
 ## What works
 
@@ -91,6 +95,14 @@ what was **not** verified.
 - Model providers: OpenAI, Anthropic, Google Gemini, OpenRouter, Ollama (local) and any custom
   OpenAI-compatible endpoint. Keys are encrypted with the OS credential store (DPAPI on Windows).
 - Local conversation history and task/tool logs; conversation JSON is stored in the app data dir.
+- **File bridge:** drag files or folders from Windows onto the Linux panel, or open the file drawer
+  in the panel to browse `~/workspace`, upload and save individual files back to Windows. Names are
+  never overwritten and upload paths are confined to `~/workspace` (see below).
+- Live guest memory, disk and load readings in the Linux panel (real values from `free`, `df` and
+  `/proc/loadavg`, refreshed every 5 s while the VM runs).
+- **Settings → Test connection:** sends one real, tiny request through the selected provider and
+  reports the actual latency or the provider's error; no cached or invented success.
+- **Settings → About:** checks the latest GitHub release and links to it when a newer version exists.
 - English and Azerbaijani UI.
 - Configurable VM memory/CPU count/disk size and automatic startup.
 
@@ -107,6 +119,28 @@ what was **not** verified.
 
 QEMU is intentionally **not** committed to this repository; it is GPL software with its own
 distribution requirements. If you ship installers, see [docs/LICENSING.md](docs/LICENSING.md).
+
+## Working with files
+
+Files cross the boundary through SFTP, not through a shared folder or a host mount. The guest
+filesystem is not mounted on Windows, and the Windows filesystem is not mounted in Linux.
+
+- **Copy in:** drop files or whole folders anywhere on the Linux desktop, or press the folder icon
+  in the panel header and choose **Upload**. Files land in `~/workspace`; a folder keeps its name.
+  Large uploads use the native file picker and SFTP `fastPut` rather than sending bytes through the
+  renderer.
+- **Copy out:** open the file drawer, navigate into a folder and press the download icon (or click a
+  file) to save it anywhere on Windows through the system dialog.
+- **Never overwritten:** if a file with the same name already exists, TagNest picks `name-1.ext`,
+  `name-2.ext`, … instead of destroying the existing guest file.
+- **Confined:** every browse/download path is resolved inside the guest and checked after symlink
+  resolution, so a link cannot redirect the drawer to `/etc`. Upload names are stripped of `..`
+  segments. Host folders are walked without following host symlinks.
+- **Limits:** drag & drop accepts up to 200 files / 64 MB per drop; the native uploader accepts up
+  to 500 files / 512 MB; downloads are capped at 512 MB per file. Larger files should be fetched in
+  the guest or split first.
+- The drawer only lists `~/workspace`. Files elsewhere in Linux are still reachable by the agent
+  through `run_command`, as before.
 
 ## Quick start (development)
 
@@ -275,10 +309,13 @@ file persisted and checks that no Windows host paths are mounted. The recorded r
   Hypervisor Platform is the supported fix.
 - QEMU is expected on the host; the repo does not redistribute QEMU binaries. An installer has to
   ship them separately or install QEMU as a prerequisite.
-- The NSIS installer builds (`release/TagNest-0.1.0-x64.exe`, ≈117 MB) and the packaged
-  `win-unpacked` app was launched and verified with the real VM. The installer is built by CI but
-  install/uninstall was not exercised on a clean Windows machine. It is unsigned, so Windows
-  SmartScreen will warn.
+- The NSIS installer builds (`release/TagNest-0.2.0-x64.exe`, ≈119 MB) and the packaged
+  `win-unpacked` app was launched and verified with the real VM, the file drawer and live stats. The
+  installer is built by CI but install/uninstall was not exercised on a clean Windows machine. It is
+  unsigned, so Windows SmartScreen will warn.
+- Drag & drop was verified with a real DOM drop event (file bytes through the preload bridge and
+  SFTP), not by dragging from Explorer with the OS pointer. The download flow's dialog is covered by
+  a unit test with a mocked dialog; the native Save dialog was not clicked in the validation run.
 - The desktop is scaled to the panel; dynamic guest resolution changes are not implemented. The
   guest screen is fixed at 1440×900 (VNC viewport scaling keeps it usable).
 - **Vision needs a vision-capable model.** `desktop_screenshot` sends a real PNG to the provider, so

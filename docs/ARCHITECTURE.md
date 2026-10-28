@@ -27,7 +27,11 @@ src/
       policy.ts      command risk classifier
       workspace.ts   file-tool path confinement
       prompts.ts     system prompt
+      provider-test.ts  one real request to the configured provider
       providers/     OpenAI-compatible, Anthropic, Gemini adapters
+    updates.ts       GitHub Releases check + semver comparison
+    workspace/
+      files.ts       Windows↔Linux SFTP bridge, listing and symlink-safe checks
   renderer/
     src/App.tsx      app state, IPC subscriptions, approvals
     src/components/  ChatPanel, LinuxPanel (noVNC), SettingsDialog, tool/approval UI
@@ -78,6 +82,30 @@ instance id forces cloud-init to retry on the next start. Observed timings on th
 - Renderer: noVNC RFB with `scaleViewport`, pointer/keyboard forwarding, guest clipboard events, and
   a paste action. `xdotool` drives the same display for the agent; the UI places an AI cursor
   marker using the tool's coordinates mapped onto the actual letterboxed canvas rectangle.
+
+## File bridge
+
+The renderer never reads or writes host files directly. Two paths exist:
+
+- **Drag & drop:** Chromium hands the renderer `File` objects. The renderer reads their bytes
+  (`arrayBuffer`), walks dropped folders with `webkitGetAsEntry`, applies caps (200 files / 64 MB)
+  and sends `{ name, relativePath, data }` over IPC. The main process validates the relative path,
+  creates missing folders in the guest, and writes through SFTP. No host path string is accepted, so
+  a compromised renderer cannot ask the main process to read an arbitrary file.
+- **Native dialog:** the renderer asks main to show `dialog.showOpenDialog`; the chosen host paths
+  stay in the main process and are copied with SFTP `fastPut`. Downloads use `showSaveDialog` and
+  `fastGet`. These are the only operations that touch host paths, and they always follow an explicit
+  user action in a system dialog.
+
+`workspace/files.ts` confines every browse/download request to `GUEST_WORKSPACE` twice: the lexical
+check in `resolveWorkspacePath` and a `realpath` check over SFTP, so a symlink inside the workspace
+cannot escape. Upload destinations are sanitized segment-by-segment; traversal is rejected. A name
+that already exists gets `-1`, `-2`, … instead of being overwritten. Host folders are walked with
+`readdir(..., { withFileTypes: true })` and symlinks are skipped.
+
+The Linux panel's file drawer calls `workspace:list` and shows directories first. The header's live
+memory/disk/load readings come from `runtime:stats`, which runs `free`, `df` and reads
+`/proc/loadavg` inside the guest and caches the parsed result for four seconds in `LinuxRuntime`.
 
 ## Agent loop
 
@@ -149,4 +177,7 @@ and message shapes differ.
 - Guest: unprivileged `tagnest` user with passwordless sudo **inside the VM**, no host mounts,
   NAT-only networking. Approvals gate privileged guest actions.
 - Secrets: OS credential store; never sent to the renderer; never logged.
+- File bridge: renderer sends bytes, never host paths; host paths only come from native dialogs.
+  Guest paths are resolved to their real path and must stay under `/home/tagnest/workspace`, so a
+  workspace symlink cannot expose `/etc` or another user's files to the drawer or a download.
 - See [SECURITY.md](SECURITY.md) for the detailed threat model and limits.

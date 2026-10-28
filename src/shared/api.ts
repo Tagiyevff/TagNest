@@ -4,8 +4,14 @@ import type {
   AppSnapshot,
   Conversation,
   ConversationSummary,
+  GuestStats,
   ProviderId,
-  RuntimeState
+  ProviderTestResult,
+  RuntimeState,
+  UpdateInfo,
+  WorkspaceDownloadResult,
+  WorkspaceListing,
+  WorkspaceTransfer
 } from './types'
 import type { SettingsPatch } from './ipc'
 
@@ -39,6 +45,22 @@ export interface TagNestApi {
     restart: () => Promise<RuntimeState>
     logs: () => Promise<RuntimeLogs>
     openLogFolder: () => Promise<{ ok: boolean }>
+    stats: () => Promise<GuestStats | null>
+  }
+  files: {
+    list: (path?: string) => Promise<WorkspaceListing>
+    upload: (input: {
+      files?: Array<{ name: string; relativePath?: string; data: Uint8Array }>
+      hostPaths?: string[]
+      pick?: boolean
+    }) => Promise<WorkspaceTransfer>
+    download: (path: string) => Promise<WorkspaceDownloadResult>
+  }
+  provider: {
+    test: () => Promise<ProviderTestResult>
+  }
+  app: {
+    checkUpdates: () => Promise<UpdateInfo>
   }
   onRuntimeState: (listener: (state: RuntimeState) => void) => () => void
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void

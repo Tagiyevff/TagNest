@@ -1,6 +1,6 @@
 {
   "name": "tagnest",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TagNest — a local-first AI workspace with a real embedded Linux desktop",
   "main": "./out/main/index.js",
   "author": "TagNest contributors",

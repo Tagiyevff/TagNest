@@ -227,11 +227,89 @@ export type AgentEvent =
   | { type: 'notice'; level: 'info' | 'error'; message: string }
 
 export interface AppSnapshot {
+  version: string
   settings: SettingsView
   runtime: RuntimeState
   conversations: ConversationSummary[]
   activeConversationId: string | null
   task: TaskState
+}
+
+export type WorkspaceEntryType = 'file' | 'directory' | 'symlink' | 'other'
+
+export interface WorkspaceEntry {
+  name: string
+  path: string
+  relative: string
+  type: WorkspaceEntryType
+  size: number
+  modified: number
+}
+
+export interface WorkspaceListing {
+  path: string
+  relative: string
+  parent: string | null
+  entries: WorkspaceEntry[]
+  truncated: boolean
+}
+
+/** One file sent from the renderer (drag & drop) into the guest workspace. */
+export interface WorkspaceUploadFile {
+  name: string
+  relativePath?: string
+  data: Uint8Array
+}
+
+export interface WorkspaceTransferFile {
+  name: string
+  ok: boolean
+  path?: string
+  error?: string
+}
+
+export interface WorkspaceTransfer {
+  uploaded: number
+  skipped: number
+  bytes: number
+  canceled?: boolean
+  files: WorkspaceTransferFile[]
+}
+
+export interface WorkspaceDownloadResult {
+  ok: boolean
+  canceled?: boolean
+  path?: string
+  error?: string
+}
+
+export interface GuestStats {
+  memoryUsedMB: number
+  memoryTotalMB: number
+  diskUsedGB: number
+  diskTotalGB: number
+  load1: number
+  cpus: number
+  uptimeSeconds: number
+}
+
+export interface ProviderTestResult {
+  ok: boolean
+  message: string
+  latencyMs?: number
+  model?: string
+  reply?: string
+}
+
+export interface UpdateInfo {
+  current: string
+  latest: string | null
+  updateAvailable: boolean
+  url: string
+  name?: string
+  notes?: string
+  publishedAt?: string
+  message?: string
 }
 
 export interface GuestInfo {

@@ -20,6 +20,10 @@ export type IconName =
   | 'trash'
   | 'trash-small'
   | 'image'
+  | 'folder'
+  | 'file'
+  | 'download'
+  | 'upload'
 
 const paths: Record<IconName, JSX.Element> = {
   plus: <path d="M8 3.5v9M3.5 8h9" />,
@@ -84,7 +88,11 @@ const paths: Record<IconName, JSX.Element> = {
       <circle cx="6" cy="6.4" r="1.1" />
       <path d="m3.6 11.4 3.3-3 2.3 2 1.6-1.4 2 1.8" />
     </>
-  )
+  ),
+  folder: <path d="M1.9 4.4A1.4 1.4 0 0 1 3.3 3h3l1.3 1.6h5.1a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.3a1.4 1.4 0 0 1-1.4-1.4V4.4Z" />,
+  file: <path d="M4 2.4h5l3 3v8.2H4V2.4Zm5 0v3h3" />,
+  download: <path d="M8 2.6v7.6M4.6 7.2 8 10.6l3.4-3.4M3 13.4h10" />,
+  upload: <path d="M8 10.6V3M4.6 6.4 8 3l3.4 3.4M3 13.4h10" />
 }
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }): JSX.Element {

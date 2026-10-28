@@ -16,6 +16,10 @@ screenshots/
 .tagnest-data/
 tagnest.png
 
+# Promo media: large binaries, rebuilt from source assets
+ad/*.mp4
+ad/*.mp3
+
 # Secrets and environment files — never commit these
 .env
 .env.*

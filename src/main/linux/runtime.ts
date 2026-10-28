@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import type { AppSettings, RuntimeState } from '../../shared/types'
+import type { AppSettings, GuestStats, RuntimeState } from '../../shared/types'
 import { logger } from '../logger'
 import { readJsonFile, writeJsonFileAtomic } from '../storage/json'
 import { GUEST_VNC_PORT, QEMU_DOWNLOAD_URL } from './config'
@@ -15,6 +15,7 @@ import {
 import { detectAcceleration, findQemuBinary } from './qemu'
 import { LinuxProvisioner, linuxPaths } from './provision'
 import { GuestClient, type ExecOptions, type ExecResult } from './ssh'
+import { readGuestStats } from './stats'
 import { VncBridge, getFreeLoopbackPort, waitForTcpPort } from './vnc'
 
 type StateListener = (state: RuntimeState) => void
@@ -51,6 +52,7 @@ export class LinuxRuntime {
   private lastGuestStep = ''
   private sshHostPort: number | null = null
   private accelCache: { acceleration: RuntimeState['acceleration']; warning?: string } | null = null
+  private statsCache: { at: number; startedAt?: number; value: GuestStats | null } | null = null
 
   constructor(
     userDataDir: string,
@@ -89,6 +91,21 @@ export class LinuxRuntime {
     const guest = this.getGuest()
     const result = await guest.exec(command, options)
     return result
+  }
+
+  /**
+   * Live guest memory/disk/load readings for the panel header. Cached for a
+   * few seconds so several views cannot turn into an SSH polling loop. Returns
+   * null instead of fake zeros when the guest cannot answer.
+   */
+  async getStats(): Promise<GuestStats | null> {
+    if (this.state.phase !== 'running' || !this.guest.isConnected) return null
+    const now = Date.now()
+    const cache = this.statsCache
+    if (cache && cache.startedAt === this.state.startedAt && now - cache.at < 4000) return cache.value
+    const value = await readGuestStats(this.guest)
+    this.statsCache = { at: Date.now(), startedAt: this.state.startedAt, value }
+    return value
   }
 
   getLogsDirectory(): string {
@@ -133,9 +150,10 @@ export class LinuxRuntime {
       await this.seed?.close().catch(() => undefined)
       this.seed = null
       this.qemu = null
-      this.stopping = false
-      this.setState({
-        phase: 'stopped',
+    this.stopping = false
+    this.statsCache = null
+    this.setState({
+      phase: 'stopped',
         message: 'Linux is stopped',
         vncUrl: undefined,
         sshPort: undefined,

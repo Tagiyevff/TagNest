@@ -32,7 +32,19 @@ const api: TagNestApi = {
     stop: () => ipcRenderer.invoke(IPC.runtimeStop),
     restart: () => ipcRenderer.invoke(IPC.runtimeRestart),
     logs: () => ipcRenderer.invoke(IPC.runtimeLogs),
-    openLogFolder: () => ipcRenderer.invoke(IPC.appOpenLogs)
+    openLogFolder: () => ipcRenderer.invoke(IPC.appOpenLogs),
+    stats: () => ipcRenderer.invoke(IPC.runtimeStats)
+  },
+  files: {
+    list: (path) => ipcRenderer.invoke(IPC.workspaceList, { path }),
+    upload: (input) => ipcRenderer.invoke(IPC.workspaceUpload, input),
+    download: (path) => ipcRenderer.invoke(IPC.workspaceDownload, { path })
+  },
+  provider: {
+    test: () => ipcRenderer.invoke(IPC.providerTest)
+  },
+  app: {
+    checkUpdates: () => ipcRenderer.invoke(IPC.appCheckUpdates)
   },
   onRuntimeState: (listener) => subscribe(IPC.eventRuntime, listener),
   onAgentEvent: (listener) => subscribe(IPC.eventAgent, listener)

@@ -23,6 +23,7 @@ interface Toast {
 export default function App(): JSX.Element {
   const [ready, setReady] = useState(false)
   const [fatal, setFatal] = useState('')
+  const [version, setVersion] = useState('')
   const [settings, setSettings] = useState<SettingsView | null>(null)
   const [runtime, setRuntime] = useState<RuntimeState | null>(null)
   const [conversation, setConversation] = useState<Conversation | null>(null)
@@ -116,6 +117,7 @@ export default function App(): JSX.Element {
       .getState()
       .then(async (state) => {
         if (disposed) return
+        setVersion(state.version)
         setSettings(state.settings)
         setRuntime(state.runtime)
         setTask(state.task)
@@ -346,6 +348,7 @@ export default function App(): JSX.Element {
         <SettingsDialog
           key={`${settings.provider}:${settings.model}`}
           t={t}
+          version={version}
           settings={settings}
           runtime={runtime}
           onClose={() => setSettingsOpen(false)}

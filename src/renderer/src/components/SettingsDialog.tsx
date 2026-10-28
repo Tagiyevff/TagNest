@@ -1,10 +1,18 @@
 import { useState, type JSX } from 'react'
-import type { Language, ProviderId, RuntimeState, SettingsView } from '@shared/types'
+import type {
+  Language,
+  ProviderId,
+  ProviderTestResult,
+  RuntimeState,
+  SettingsView,
+  UpdateInfo
+} from '@shared/types'
 import type { Translate } from '../i18n'
 import { Icon } from './Icon'
 
 interface SettingsDialogProps {
   t: Translate
+  version: string
   settings: SettingsView
   runtime: RuntimeState
   onClose: () => void
@@ -37,6 +45,11 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  const [updateError, setUpdateError] = useState('')
 
   const run = async (action: () => Promise<void>, message: string): Promise<void> => {
     setBusy(true)
@@ -65,7 +78,33 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     void run(async () => {
       await props.onSetKey(settings.provider, apiKey.trim())
       setApiKey('')
+      setTestResult(null)
     }, t('saved'))
+  }
+
+  const testConnection = async (): Promise<void> => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      setTestResult(await window.tagnest.provider.test())
+    } catch (caught) {
+      setTestResult({ ok: false, message: cleanError(caught) })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const checkUpdates = async (): Promise<void> => {
+    setCheckingUpdate(true)
+    setUpdateError('')
+    setUpdate(null)
+    try {
+      setUpdate(await window.tagnest.app.checkUpdates())
+    } catch (caught) {
+      setUpdateError(cleanError(caught))
+    } finally {
+      setCheckingUpdate(false)
+    }
   }
 
   return (
@@ -163,6 +202,21 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             </p>
             <p className="field-note">{t('keyNote')}</p>
 
+            <div className="connection-check">
+              <button type="button" className="button ghost" disabled={testing || busy} onClick={() => void testConnection()}>
+                {testing ? t('testingConnection') : t('testConnection')}
+              </button>
+              {testResult ? (
+                <span className={`connection-state ${testResult.ok ? 'ok' : 'error'}`}>
+                  <Icon name={testResult.ok ? 'check' : 'alert'} size={12} />
+                  {testResult.message}
+                </span>
+              ) : (
+                <span className="connection-state">{t('connectionNotTested')}</span>
+              )}
+            </div>
+            <p className="field-note">{t('testHint')}</p>
+
             <div className={`privacy-note ${provider?.privacy === 'local' ? 'local' : ''}`}>
               <strong>{t('privacyTitle')}</strong>
               <p>{provider?.privacy === 'local' ? t('privacyLocal') : t('privacyRemote')}</p>
@@ -241,6 +295,47 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             <p className="field-note">{t('persistenceNote')}</p>
           </section>
 
+          <section className="settings-section">
+            <h3>{t('about')}</h3>
+            <div className="about-row">
+              <span className="about-version">
+                TagNest <strong>{props.version || '—'}</strong>
+              </span>
+              <button
+                type="button"
+                className="button ghost"
+                disabled={checkingUpdate}
+                onClick={() => void checkUpdates()}
+              >
+                {checkingUpdate ? t('checkingUpdates') : t('checkUpdates')}
+              </button>
+            </div>
+            {update ? (
+              <div className={`update-result ${update.updateAvailable ? 'new' : ''}`}>
+                <p>
+                  <Icon name={update.updateAvailable ? 'alert' : 'check'} size={12} />{' '}
+                  {update.latest
+                    ? update.updateAvailable
+                      ? t('updateAvailable', { version: update.latest })
+                      : t('upToDate', { version: update.current })
+                    : update.message}
+                </p>
+                {update.latest && update.updateAvailable ? (
+                  <a className="link-button" href={update.url} target="_blank" rel="noreferrer">
+                    {t('openRelease')}
+                  </a>
+                ) : null}
+                {update.notes ? (
+                  <details className="update-notes">
+                    <summary>{t('releaseNotes')}</summary>
+                    <pre>{update.notes}</pre>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
+            {updateError ? <p className="settings-error">{updateError}</p> : null}
+          </section>
+
           <section className="settings-section compact">
             <label className="field">
               <span>{t('language')}</span>
@@ -269,4 +364,9 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
     </div>
   )
+}
+
+function cleanError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/^Error invoking remote method '[^']+':\s*/, '').replace(/^Error:\s*/, '')
 }

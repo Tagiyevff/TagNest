@@ -24,6 +24,12 @@ export const IPC = {
   runtimeStop: 'runtime:stop',
   runtimeRestart: 'runtime:restart',
   runtimeLogs: 'runtime:logs',
+  runtimeStats: 'runtime:stats',
+  workspaceList: 'workspace:list',
+  workspaceUpload: 'workspace:upload',
+  workspaceDownload: 'workspace:download',
+  providerTest: 'provider:test',
+  appCheckUpdates: 'app:check-updates',
   appOpenLogs: 'app:open-logs',
   eventRuntime: 'event:runtime',
   eventAgent: 'event:agent'

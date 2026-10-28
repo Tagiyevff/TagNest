@@ -3,7 +3,7 @@
 This file records what was actually executed on the development machine, with the observed
 results. It is deliberately specific about what was **not** verified.
 
-- Date: 2026-10-26 / 2026-10-27
+- Date: 2026-10-26 → 2026-10-28
 - Host: Windows (Electron 45, Node 26.1.0, QEMU 11)
 - Guest: Alpine Linux 3.24.3 (kernel 6.18.58-0-virt), XFCE, Xvnc `:1` at 1440×900
 - Acceleration: WHPX (`-machine pc -accel whpx -cpu qemu64`), 2 vCPU, 3072 MB RAM, 20 GB sparse overlay
@@ -13,14 +13,130 @@ results. It is deliberately specific about what was **not** verified.
 ```text
 npm run typecheck   PASS
 npm run lint        PASS (0 problems)
-npm test            PASS (4 files, 33 tests)
+npm test            PASS (8 files, 64 tests)
 npm run build       PASS (electron-vite, main + preload + renderer)
+npm run package:win PASS (NSIS, release/TagNest-0.2.0-x64.exe, 119 MB)
 ```
+
+The 64 tests include the new update-check/version comparison, guest stats parser, upload path
+sanitizer, workspace listing confinement (including a symlink that resolves to `/etc`), download
+success/cancel with a mocked native dialog, and the real provider connection check against a mock
+HTTP endpoint (success, missing key, 401, unreachable local server).
 
 The unit tests cover the provider adapters against local mock HTTP servers (including a 401 mapped to
 a credential error, a body with data appended after the JSON document, a non-JSON body and an empty
 body), secret redaction, storage/settings persistence, path confinement helpers and the web helpers
 (URL validation, HTML→text conversion, search-result parsing).
+
+## 0.2.0 file bridge, live stats, provider test and updates (2026-10-28)
+
+The production bundle (`npx electron . --remote-debugging-port=9222`) was driven through the real
+preload bridge with Chrome DevTools Protocol while the real provisioned VM was running
+(WHPX, 2 vCPU, 3 GB). No renderer mocks were involved.
+
+```text
+TagNest 0.2.0 starting (win32, Electron 45.0.0)
+QEMU started … guest SSH ready … guest is ready on ssh:…, vnc:…   (~30 s after start)
+```
+
+### Live guest resources
+
+`window.tagnest.runtime.stats()` returned values read inside the guest, and the panel header showed
+them without a reload:
+
+```json
+{"memoryUsedMB":424,"memoryTotalMB":2982,"diskUsedGB":1.2119,"diskTotalGB":18.6357,
+ "load1":0.27,"cpus":2,"uptimeSeconds":33}
+```
+
+Header text: `Running · 2 CPU · 3 GB · RAM 14% · Disk 7%`. The poll stops when the VM is not running
+and the values are cached for 4 s in the main process.
+
+### File bridge
+
+A real DOM `DragEvent` carrying a `File` (`bridge-drop.txt`, 17 bytes) was dispatched on
+`.desktop-shell`; the renderer read the bytes, went through `workspace:upload` and SFTP. An
+independent SSH session (the agent key, not the bridge) then read it:
+
+```text
+$ cat ~/workspace/bridge-drop.txt
+ drop bridge test
+$ ls -l ~/workspace/bridge-drop.txt
+-rw-r--r-- 1 tagnest tagnest 17 … /home/tagnest/workspace/bridge-drop.txt
+```
+
+- Dropping the **same name again** produced `bridge-drop-1.txt` (12 bytes) and left the original
+  file untouched.
+- A nested upload (`relativePath: folder-a/nested.txt`) created the folder; the real drawer showed
+  `folder-a` first, navigated to `~/workspace/folder-a`, listed `nested.txt`, and the **Up** button
+  returned to `~/workspace` (disabled at the root).
+- Files survived stopping the app and QEMU and relaunching the app (the same workspace.qcow2):
+  `bridge-drop.txt`, `bridge-drop-1.txt` and `folder-a/` were still listed afterwards.
+- `window.tagnest.files.download('/etc/passwd')` was refused **before** a save dialog opened:
+  `Access denied: /etc/passwd is outside the TagNest workspace`.
+- A symlink `~/workspace/escape-link -> /etc` was created inside the guest; listing it through the
+  bridge was refused:
+  `…/escape-link resolves outside the TagNest workspace and cannot be opened here.`
+- 15 sequential `files.list()` calls each returned all 6 entries.
+
+**Bug found and fixed by this test:** every SFTP operation opened a new channel and never closed
+it. sshd's `MaxSessions` (10 by default) was exhausted after a few uploads, and the drawer failed
+with `(SSH) Channel open failure: open failed`. `GuestClient` now opens one SFTP session lazily,
+reuses it, closes it with the connection and rejects a session that arrives after a disconnect.
+The 15-call run above passes with the fix; the agent's file tools share the same session.
+
+### Provider connection test
+
+The configured provider was Gemini (`gemini-2.5-flash`) with a stored key. The Settings button and
+the IPC handler each sent one real request and returned:
+
+```json
+{"ok":true,"latencyMs":707,"model":"gemini-2.5-flash","reply":"OK",
+ "message":"Connected to gemini-2.5-flash in 707 ms."}
+```
+
+The UI rendered it as `Connected to gemini-2.5-flash in 709 ms.` in the green state. Unit tests also
+cover a missing key, a 401 with the provider's message, and an unreachable `127.0.0.1` endpoint.
+
+### Update check
+
+`window.tagnest.app.checkUpdates()` hit the real GitHub Releases API:
+
+```json
+{"current":"0.2.0","latest":"0.1.0","updateAvailable":false,
+ "url":"https://github.com/Tagiyevff/TagNest/releases/tag/v0.1.0"}
+```
+
+Settings → About showed `TagNest 0.2.0` and, after clicking **Check for updates**,
+`TagNest 0.2.0 is up to date.` with the release-notes disclosure. This is the correct result while
+0.2.0 is not yet tagged. Rate limiting (403) and network failures produce explicit errors instead
+of a false “up to date”.
+
+### Packaged build
+
+```text
+npm run package:win  → release/TagNest-0.2.0-x64.exe (119 MB, NSIS, unsigned)
+release/win-unpacked/TagNest.exe --remote-debugging-port=9223
+  TagNest 0.2.0 starting (win32, Electron 45.0.0)
+  guest is ready after 36.6 s
+  runtime: {version: 0.2.0, phase: running, acceleration: whpx}
+  drawer:  ~/workspace → 4 files, no error
+  header:  RAM 9% · Disk 7%
+```
+
+The packaged app's window closed cleanly and both TagNest and QEMU exited. The installer itself was
+not run, so install/uninstall is still untested.
+
+### Not exercised
+
+- Dragging from Windows Explorer with the OS pointer. The drop handler was exercised with a real
+  DOM drop event and real file bytes, but folder-tree walking with `webkitGetAsEntry` was not
+  exercised against Explorer.
+- Clicking through the native **Save** dialog. `downloadWorkspaceFile` success and cancel are unit
+  tested with a mocked `dialog.showSaveDialog`, and the outside-workspace refusal was exercised in
+  the running app.
+- The native **Upload** file picker (`dialog.showOpenDialog`). Its handler shares `uploadHostPaths`
+  with the tested folder-upload path.
 
 ## Real VM smoke test
 
@@ -303,6 +419,9 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
   takes several minutes. See README “Known limitations”.
 - **TCG (no WHPX) fallback.** The pinned kernel panicked under TCG on this machine earlier in
   development; software emulation is not presented as a working path.
+- **Native drag from Explorer, native Save dialog and native Upload picker.** The file bridge
+  itself (paths, confinement, overwrite protection, byte transfer, listing, navigation) was tested
+  in the running app; the three OS-level interactions listed above were not clicked by a human.
 - **Clipboard transfer and dynamic guest resolution.** Both are implemented (clipboard buttons,
   noVNC viewport scaling) but were not exercised in this test run.
 - **DOM automation.** The agent sees the desktop through screenshots and acts with the real mouse
