@@ -20,6 +20,7 @@ import type { ConversationStore } from './storage/conversations'
 import type { SecretsStore } from './storage/secrets'
 import type { SettingsStore } from './storage/settings'
 import { logger } from './logger'
+import { listConfiguredProviderModels } from './agent/provider-models'
 import { testProviderConnection } from './agent/provider-test'
 import { checkForUpdates } from './updates'
 import {
@@ -65,24 +66,28 @@ export function registerIpc(deps: IpcDependencies): void {
   // The agent was constructed with an emit callback supplied by the app; it is
   // wired here through a setter to keep construction order simple.
   agent.setEmitter(emitAgent)
+  agent.setSettingsEmitter((view) => send(IPC.eventSettings, view))
 
   ipcMain.handle(IPC.appGetState, () => snapshot())
 
   ipcMain.handle(IPC.appUpdateSettings, async (_event, raw: unknown) => {
     const patch = settingsPatchSchema.parse(raw)
     settings.update(patch)
+    send(IPC.eventSettings, settings.getView())
     return snapshot()
   })
 
   ipcMain.handle(IPC.appSetApiKey, async (_event, raw: unknown) => {
     const { provider, apiKey } = setApiKeySchema.parse(raw)
     secrets.set(provider, apiKey.trim())
+    send(IPC.eventSettings, settings.getView())
     return snapshot()
   })
 
   ipcMain.handle(IPC.appClearApiKey, async (_event, raw: unknown) => {
     const { provider } = providerOnlySchema.parse(raw)
     secrets.clear(provider)
+    send(IPC.eventSettings, settings.getView())
     return snapshot()
   })
 
@@ -175,6 +180,8 @@ export function registerIpc(deps: IpcDependencies): void {
   })
 
   ipcMain.handle(IPC.providerTest, async () => testProviderConnection(settings, secrets))
+
+  ipcMain.handle(IPC.providerModels, async () => listConfiguredProviderModels(settings, secrets))
 
   ipcMain.handle(IPC.appCheckUpdates, async () => checkForUpdates(app.getVersion()))
 

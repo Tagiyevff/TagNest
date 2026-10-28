@@ -3,7 +3,7 @@
 **A local-first AI workspace with a real Linux desktop inside it.**
 
 [![CI](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml/badge.svg)](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c&v=0.2.0)](https://github.com/Tagiyevff/TagNest/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c&v=0.4.0)](https://github.com/Tagiyevff/TagNest/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-11181c.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-11181c)](README.md#requirements)
 
@@ -36,8 +36,10 @@ on your computer, stored on your disk.
    straight to the desktop; your Linux files stay in `%APPDATA%\TagNest`.
 4. **Add a model** in Settings (gear icon): paste an OpenAI / Anthropic / Gemini / OpenRouter key,
    point it at a custom OpenAI-compatible endpoint, or select **Ollama (local)** for fully local
-   inference. Keys are encrypted with the OS credential store and never leave your machine except
-   as the request to the provider you chose.
+   inference. The app fetches the provider's real model list as soon as the key is saved — you pick
+   from a dropdown instead of typing an ID. On OpenRouter, **Free — Automatic** selects a working
+   free model for you. Keys are encrypted with the OS credential store and never leave your machine
+   except as the request to the provider you chose.
 
 The installer is **unsigned**, so Windows SmartScreen will show "unrecognised app" on first run.
 Hardware virtualization (WHPX) is strongly recommended; without it TagNest explains the problem and
@@ -48,8 +50,8 @@ Building from source instead: see [Quick start (development)](#quick-start-devel
 
 ## Status
 
-Early release (`0.2.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
-settings are implemented and were exercised against a real VM. Typecheck, lint, 64 unit tests, the
+Early release (`0.4.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
+settings are implemented and were exercised against a real VM. Typecheck, lint, 89 unit tests, the
 production build and the real-VM smoke test pass. Provider adapters were tested against local mocks
 of their real HTTP APIs, and the OpenAI-compatible path was additionally driven end to end against
 a local router that forwards to a real hosted model — tool calls, file creation and read-back in the
@@ -58,8 +60,10 @@ guest browser — was tested against a mock OpenAI-compatible server driving rea
 real internet requests. See [docs/VALIDATION.md](docs/VALIDATION.md) for the exact results, including
 what was **not** verified.
 
-`0.2.0` adds a two-way file bridge between Windows and the Linux workspace, live guest resource
-readings, a real provider connection test and an update check against GitHub Releases. See
+`0.4.0` makes model selection automatic: each provider's real model list is loaded into a dropdown
+(right after the API key is saved and on **Refresh**), and OpenRouter gets a **Free — Automatic**
+mode that selects and verifies a currently working free model, falling back to the next one when a
+model refuses direct API traffic. `0.3.0` added real Linux app projects. See
 [CHANGELOG.md](CHANGELOG.md).
 
 ## What works
@@ -83,6 +87,13 @@ readings, a real provider connection test and an update check against GitHub Rel
 - **The agent can see the screen.** `desktop_screenshot` captures the real guest desktop and hands
   the PNG to a vision-capable model, so it can read a page, find a button and click it — verified
   end to end against a live model (see [docs/VALIDATION.md](docs/VALIDATION.md)).
+- **Build real apps inside Linux.** Ask for an app and the agent creates a project under
+  `~/workspace/apps/<name>` with `app_create`, writes and edits the files, runs its real test script
+  with `app_test`, then starts it with `app_run`: web projects are served on a local port and opened
+  in Firefox on the embedded desktop; CLI projects open in a terminal window. `app_list` shows the
+  real state, URL and PID, and `app_stop` kills the process group. Starter projects include a small
+  HTML/CSS/JS page and a shell CLI with their own tests, so a fresh model has a working baseline
+  instead of inventing a build system.
 - Agent tools that act on real state: shell commands, SFTP file read/write/edit/list/search,
   system inspection, background processes, and `xdotool` desktop control — move, single/double/right
   click, wheel scroll, type, key chords, list and focus windows, launch apps. The AI cursor is drawn
@@ -94,6 +105,14 @@ readings, a real provider connection test and an update check against GitHub Rel
   not just the SSH channel.
 - Model providers: OpenAI, Anthropic, Google Gemini, OpenRouter, Ollama (local) and any custom
   OpenAI-compatible endpoint. Keys are encrypted with the OS credential store (DPAPI on Windows).
+- **Automatic model discovery:** the settings screen calls the selected provider's real model-list
+  endpoint after a key is saved (and on **Refresh**), shows the model name, ID, context and reported
+  capabilities in a dropdown, and never asks the user to type an ID unless they choose **Custom
+  model ID…**. The list is provider-scoped; switching providers fetches that provider's own list.
+- **OpenRouter Free — Automatic:** one dropdown entry that fetches OpenRouter's free models, ranks
+  the ones that report tool support and context size, and uses the first that actually answers. If
+  one is rate-limited or restricted to a different harness (403/404/429), the agent and the
+  connection test try the next free model and report the switch instead of failing silently.
 - Local conversation history and task/tool logs; conversation JSON is stored in the app data dir.
 - **File bridge:** drag files or folders from Windows onto the Linux panel, or open the file drawer
   in the panel to browse `~/workspace`, upload and save individual files back to Windows. Names are
@@ -168,7 +187,8 @@ Add an API key in **Settings** (gear icon), pick a model, then ask for something
 - "Find failing tests in `~/workspace/app` and fix them."
 
 Or use a local model: install [Ollama](https://ollama.com), pull a model, select **Ollama (local)**
-in Settings and set the model name. Prompts and tool results then stay on your machine.
+in Settings and pick the pulled model from the list (it comes from Ollama's `/api/tags`). Prompts
+and tool results then stay on your machine.
 
 ## How it works
 
@@ -215,6 +235,17 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | OpenRouter | `https://openrouter.ai/api/v1` | API key | same |
 | Ollama | `http://127.0.0.1:11434/v1` | none | stays on your machine |
 | Custom | your OpenAI-compatible base URL | optional | depends on the endpoint |
+
+The model dropdown is populated from each provider's own API: `GET /models` for OpenAI and
+OpenAI-compatible endpoints, `GET /v1/models` for Anthropic, `GET /models` for Gemini (keeping
+`generateContent` models), `GET /models` for OpenRouter and `GET /api/tags` for Ollama. If a list
+request fails, Settings shows that endpoint's real error and keeps the **Custom model ID…** fallback.
+
+OpenRouter's **Free — Automatic** is not a hardcoded model ID. It filters the live model list for
+free pricing/`:free` models, prefers tool-capable models with larger context, and treats 403, 404,
+429 and 5xx as "try the next free model". The actual model that answered is written back to Settings
+and shown as **Currently using: …**. This is a real fallback, not a claim that every free model is
+usable: OpenRouter can restrict a listed free model to other apps, and the app moves on.
 
 There is no invented fallback: if a provider is selected without a key or the request fails, the
 error appears in the chat and no command is run. Keys never go to the renderer and are never logged.
@@ -309,10 +340,9 @@ file persisted and checks that no Windows host paths are mounted. The recorded r
   Hypervisor Platform is the supported fix.
 - QEMU is expected on the host; the repo does not redistribute QEMU binaries. An installer has to
   ship them separately or install QEMU as a prerequisite.
-- The NSIS installer builds (`release/TagNest-0.2.0-x64.exe`, ≈119 MB) and the packaged
-  `win-unpacked` app was launched and verified with the real VM, the file drawer and live stats. The
-  installer is built by CI but install/uninstall was not exercised on a clean Windows machine. It is
-  unsigned, so Windows SmartScreen will warn.
+- The NSIS installer builds (`release/TagNest-0.4.0-x64.exe`, ≈119 MB). The packaged `win-unpacked`
+  app was launched for 0.3.0; the 0.4.0 package is built by the same config but install/uninstall was
+  not exercised on a clean Windows machine. It is unsigned, so Windows SmartScreen will warn.
 - Drag & drop was verified with a real DOM drop event (file bytes through the preload bridge and
   SFTP), not by dragging from Explorer with the OS pointer. The download flow's dialog is covered by
   a unit test with a mocked dialog; the native Save dialog was not clicked in the validation run.
@@ -327,6 +357,13 @@ file persisted and checks that no Windows host paths are mounted. The recorded r
   that step needs internet access and adds about 90 MB to the guest disk. Browser *automation*
   (reading page pixels, driving the DOM) is not implemented — the agent uses `web_fetch`/
   `web_search` for content and can only show pages to you with `open_url`.
+- App projects are deliberately small: `web` is plain HTML/CSS/JS served by the guest's Python
+  `http.server`, and `cli` is a shell program in a terminal. Native GUI toolkits (GTK/Qt), packaged
+  desktop bundles and app-store style distribution are not scaffolded; the agent can still install
+  a toolkit and build one manually, but it is not a turnkey template.
+- Web app projects need a free local port (1024–65535, default 8080) and a running VM. The agent
+  checks the port before creating and before starting, but two projects can share a default port
+  while stopped; start them on different ports.
 - Hosted provider calls were not exercised with live keys in this environment; see VALIDATION.
 - Clipboard transfer and proportional guest-resolution changes are implemented but were not
   exercised in the validation run.

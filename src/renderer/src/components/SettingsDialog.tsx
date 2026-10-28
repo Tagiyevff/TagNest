@@ -1,7 +1,11 @@
-import { useState, type JSX } from 'react'
+import { useCallback, useEffect, useState, type JSX } from 'react'
 import type {
   Language,
+  ModelCatalog,
+  ModelMode,
+  ModelOption,
   ProviderId,
+  ProviderModelsResult,
   ProviderTestResult,
   RuntimeState,
   SettingsView,
@@ -19,6 +23,7 @@ interface SettingsDialogProps {
   onUpdate: (patch: {
     provider?: ProviderId
     model?: string
+    modelMode?: ModelMode
     baseUrl?: string
     language?: Language
     memoryMB?: number
@@ -35,11 +40,16 @@ interface SettingsDialogProps {
 const MEMORY_OPTIONS = [2048, 3072, 4096, 6144, 8192]
 const CPU_OPTIONS = [1, 2, 3, 4]
 const DISK_OPTIONS = [12, 20, 32, 48]
+const FREE_MODEL_VALUE = '__tagnest_free__'
+const CUSTOM_MODEL_VALUE = '__tagnest_custom__'
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const { t, settings, runtime } = props
   const provider = settings.providers.find((entry) => entry.id === settings.provider)
+  const requiresApiKey = Boolean(provider?.requiresApiKey)
+  const providerLabel = provider?.label ?? settings.provider
   const [model, setModel] = useState(settings.model)
+  const [modelMode, setModelMode] = useState<ModelMode>(settings.modelMode)
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl)
   const [apiKey, setApiKey] = useState('')
   const [status, setStatus] = useState('')
@@ -50,6 +60,69 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState('')
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(!(requiresApiKey && !settings.hasApiKey))
+  const [modelsError, setModelsError] = useState('')
+  const [modelsNote, setModelsNote] = useState('')
+  const [showManual, setShowManual] = useState(false)
+
+  const applyCatalog = useCallback(
+    (result: ProviderModelsResult): void => {
+      if (!result.ok || !result.catalog) {
+        setCatalog(null)
+        setModelsError(result.message ?? t('modelsFailed'))
+        return
+      }
+      setCatalog(result.catalog)
+      if (result.catalog.models.length === 0) setModelsNote(t('modelsEmpty'))
+      else setModelsNote(t('modelsHint', { provider: providerLabel }))
+    },
+    [providerLabel, t]
+  )
+
+  const loadModels = async (force = false): Promise<ModelCatalog | null> => {
+    if (requiresApiKey && !settings.hasApiKey && !force) {
+      setCatalog(null)
+      setModelsError('')
+      setModelsNote('')
+      return null
+    }
+    setModelsLoading(true)
+    setModelsError('')
+    setModelsNote('')
+    try {
+      const result = await window.tagnest.provider.models()
+      applyCatalog(result)
+      return result.ok ? result.catalog ?? null : null
+    } catch (caught) {
+      setCatalog(null)
+      setModelsError(cleanError(caught))
+      return null
+    } finally {
+      setModelsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (requiresApiKey && !settings.hasApiKey) return
+    let active = true
+    window.tagnest.provider
+      .models()
+      .then((result) => {
+        if (!active) return
+        setModelsLoading(false)
+        applyCatalog(result)
+      })
+      .catch((caught: unknown) => {
+        if (!active) return
+        setModelsLoading(false)
+        setCatalog(null)
+        setModelsError(cleanError(caught))
+      })
+    return () => {
+      active = false
+    }
+  }, [applyCatalog, requiresApiKey, settings.hasApiKey])
 
   const run = async (action: () => Promise<void>, message: string): Promise<void> => {
     setBusy(true)
@@ -65,12 +138,50 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     }
   }
 
-  const saveModel = (): void => {
+  const saveBaseUrl = (): void => {
+    void run(async () => {
+      await props.onUpdate({ baseUrl: baseUrl.trim() })
+      await loadModels(true)
+    }, t('saved'))
+  }
+
+  const saveManualModel = (): void => {
     if (!model.trim()) {
       setError(t('modelNotConfigured'))
       return
     }
-    void run(() => props.onUpdate({ model: model.trim(), baseUrl: baseUrl.trim() }), t('saved'))
+    void run(async () => {
+      await props.onUpdate({ model: model.trim(), modelMode: 'manual' })
+      setShowManual(false)
+    }, t('saved'))
+  }
+
+  const chooseModel = (value: string): void => {
+    if (value === CUSTOM_MODEL_VALUE) {
+      setShowManual(true)
+      setModelMode('manual')
+      return
+    }
+    if (value === FREE_MODEL_VALUE) {
+      void run(async () => {
+        let current = catalog
+        if (!current || current.freeModels.length === 0) {
+          current = await loadModels(true)
+        }
+        const free = current?.freeModels ?? []
+        if (free.length === 0) throw new Error(t('freeModelUnavailable'))
+        const chosen = free.find((entry) => entry.id === model) ?? free[0]
+        setModel(chosen.id)
+        setModelMode('free-auto')
+        setShowManual(false)
+        await props.onUpdate({ model: chosen.id, modelMode: 'free-auto' })
+      }, t('saved'))
+      return
+    }
+    setModel(value)
+    setModelMode('manual')
+    setShowManual(false)
+    void run(() => props.onUpdate({ model: value, modelMode: 'manual' }), t('saved'))
   }
 
   const saveKey = (): void => {
@@ -79,6 +190,13 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       await props.onSetKey(settings.provider, apiKey.trim())
       setApiKey('')
       setTestResult(null)
+      if (settings.hasApiKey) {
+        await loadModels(true)
+      } else {
+        // The parent state update changes hasApiKey; the mount effect below
+        // starts the first real model-list request for the new key.
+        setModelsLoading(true)
+      }
     }, t('saved'))
   }
 
@@ -86,7 +204,18 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     setTesting(true)
     setTestResult(null)
     try {
-      setTestResult(await window.tagnest.provider.test())
+      const result = await window.tagnest.provider.test()
+      setTestResult(result)
+      if (result.ok) {
+        if (modelMode === 'free-auto' && result.model) {
+          setModel(result.model)
+          await props.onUpdate({ model: result.model, modelMode: 'free-auto' })
+        }
+        // A verified connection is the moment the real model list is most
+        // trustworthy; refresh it so a newly saved key never leaves an empty
+        // or stale selector behind.
+        await loadModels(true)
+      }
     } catch (caught) {
       setTestResult({ ok: false, message: cleanError(caught) })
     } finally {
@@ -106,6 +235,17 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       setCheckingUpdate(false)
     }
   }
+
+  const catalogModels = catalog?.models ?? []
+  const currentInCatalog = catalogModels.some((entry) => entry.id === model)
+  const activeOption =
+    modelMode === 'free-auto'
+      ? catalog?.freeModels.find((entry) => entry.id === settings.model) ??
+        catalog?.freeModels.find((entry) => entry.id === model) ??
+        catalog?.freeModels[0]
+      : catalogModels.find((entry) => entry.id === model)
+  const selectValue =
+    modelMode === 'free-auto' ? FREE_MODEL_VALUE : showManual ? CUSTOM_MODEL_VALUE : model
 
   return (
     <div className="modal-backdrop" onClick={props.onClose}>
@@ -138,17 +278,78 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                   ))}
                 </select>
               </label>
-              <label className="field">
-                <span>{t('model')}</span>
-                <input
-                  type="text"
-                  value={model}
-                  spellCheck={false}
-                  onChange={(event) => setModel(event.target.value)}
-                  onBlur={saveModel}
-                  placeholder={provider?.defaultModel || 'model-name'}
-                />
-              </label>
+              <div className="field">
+                <div className="field-head">
+                  <span>{t('model')}</span>
+                  <button
+                    type="button"
+                    className="link-button"
+                    disabled={
+                      modelsLoading || busy || Boolean(provider?.requiresApiKey && !settings.hasApiKey)
+                    }
+                    onClick={() => void loadModels(true)}
+                  >
+                    {modelsLoading ? t('loadingModels') : t('refreshModels')}
+                  </button>
+                </div>
+                <select
+                  value={selectValue}
+                  aria-label={t('model')}
+                  disabled={busy}
+                  onChange={(event) => chooseModel(event.target.value)}
+                >
+                  {provider?.id === 'openrouter' ? (
+                    <option value={FREE_MODEL_VALUE}>{t('freeAutomatic')}</option>
+                  ) : null}
+                  {!model && modelMode !== 'free-auto' && !showManual ? (
+                    <option value="" disabled>
+                      {t('modelNotConfigured')}
+                    </option>
+                  ) : null}
+                  {model && !currentInCatalog && !showManual && modelMode !== 'free-auto' ? (
+                    <option value={model}>
+                      {model} ({t('modelCurrent')})
+                    </option>
+                  ) : null}
+                  {catalogModels.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {modelOptionLabel(entry)}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_VALUE}>{t('modelCustom')}</option>
+                </select>
+                {showManual ? (
+                  <>
+                    <input
+                      type="text"
+                      value={model}
+                      spellCheck={false}
+                      placeholder={provider?.defaultModel || 'model-id'}
+                      onChange={(event) => setModel(event.target.value)}
+                      onBlur={saveManualModel}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
+                    />
+                    <p className="field-note">{t('modelManualHint')}</p>
+                  </>
+                ) : null}
+                {modelMode === 'free-auto' ? (
+                  <div className="free-model-note">
+                    <p>{t('freeAutomaticHint')}</p>
+                    <p>{t('freeModelUsing', { model: settings.model || activeOption?.id || model })}</p>
+                  </div>
+                ) : activeOption && !showManual ? (
+                  <p className="field-note model-meta">{modelDetails(activeOption)}</p>
+                ) : null}
+                {modelsError ? (
+                  <p className="settings-error">{modelsError}</p>
+                ) : requiresApiKey && !settings.hasApiKey ? (
+                  <p className="field-note">{t('modelsNeedKey')}</p>
+                ) : modelsNote ? (
+                  <p className="field-note">{modelsNote}</p>
+                ) : null}
+              </div>
             </div>
 
             {provider?.supportsBaseUrl ? (
@@ -159,7 +360,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                   value={baseUrl}
                   spellCheck={false}
                   onChange={(event) => setBaseUrl(event.target.value)}
-                  onBlur={saveModel}
+                  onBlur={saveBaseUrl}
                   placeholder={provider.defaultBaseUrl}
                 />
               </label>
@@ -189,7 +390,15 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                     type="button"
                     className="button ghost"
                     disabled={busy}
-                    onClick={() => void run(() => props.onClearKey(settings.provider), t('keyCleared'))}
+                    onClick={() =>
+                      void run(async () => {
+                        await props.onClearKey(settings.provider)
+                        setCatalog(null)
+                        setModelsError('')
+                        setModelsNote('')
+                        setModelsLoading(false)
+                      }, t('keyCleared'))
+                    }
                   >
                     {t('clearKey')}
                   </button>
@@ -364,6 +573,25 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
     </div>
   )
+}
+
+function modelOptionLabel(option: ModelOption): string {
+  const parts = [option.name]
+  if (option.id !== option.name) parts.push(option.id)
+  if (option.contextLength) parts.push(`${formatTokens(option.contextLength)} context`)
+  return parts.join(' · ')
+}
+
+function modelDetails(option: ModelOption): string {
+  const parts = [option.id]
+  if (option.contextLength) parts.push(`${formatTokens(option.contextLength)} tokens`)
+  if (option.inputTokenLimit) parts.push(`${formatTokens(option.inputTokenLimit)} input`)
+  if (option.capabilities?.length) parts.push(option.capabilities.join(' · '))
+  return parts.join(' — ')
+}
+
+function formatTokens(value: number): string {
+  return value >= 1000 ? `${Math.round(value / 1000)}k` : String(value)
 }
 
 function cleanError(error: unknown): string {

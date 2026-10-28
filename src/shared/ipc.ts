@@ -18,6 +18,7 @@ export const settingsPatchSchema = z
   .object({
     provider: z.enum(PROVIDER_IDS).optional(),
     model: z.string().trim().min(1).max(200).optional(),
+    modelMode: z.enum(['manual', 'free-auto']).optional(),
     baseUrl: z.string().trim().max(500).optional(),
     language: languageSchema.optional(),
     memoryMB: z.number().int().min(1024).max(16384).optional(),
@@ -86,6 +87,7 @@ export const workspaceDownloadSchema = z.object({ path: z.string().min(1).max(50
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'openai',
   model: 'gpt-4.1-mini',
+  modelMode: 'manual',
   baseUrl: '',
   language: 'en',
   memoryMB: 3072,

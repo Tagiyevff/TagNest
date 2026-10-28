@@ -41,13 +41,15 @@ const api: TagNestApi = {
     download: (path) => ipcRenderer.invoke(IPC.workspaceDownload, { path })
   },
   provider: {
-    test: () => ipcRenderer.invoke(IPC.providerTest)
+    test: () => ipcRenderer.invoke(IPC.providerTest),
+    models: () => ipcRenderer.invoke(IPC.providerModels)
   },
   app: {
     checkUpdates: () => ipcRenderer.invoke(IPC.appCheckUpdates)
   },
   onRuntimeState: (listener) => subscribe(IPC.eventRuntime, listener),
-  onAgentEvent: (listener) => subscribe(IPC.eventAgent, listener)
+  onAgentEvent: (listener) => subscribe(IPC.eventAgent, listener),
+  onSettings: (listener) => subscribe(IPC.eventSettings, listener)
 }
 
 contextBridge.exposeInMainWorld('tagnest', api)

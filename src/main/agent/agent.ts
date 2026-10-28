@@ -4,6 +4,8 @@ import type {
   ApprovalRequest,
   ChatMessage,
   Conversation,
+  ModelOption,
+  SettingsView,
   TaskState,
   ToolCallView
 } from '../../shared/types'
@@ -16,7 +18,18 @@ import { redactSecrets } from '../redact'
 import type { ExecResult } from '../linux/ssh'
 import type { LinuxRuntime } from '../linux/runtime'
 import { buildSystemPrompt, fallbackSummary } from './prompts'
-import { createProviderAdapter, ProviderError, type AgentTurn, type ProviderToolCall } from './providers'
+import {
+  fetchProviderModels,
+  isRetryableFreeModelError,
+  rankFreeModels
+} from './providers/models'
+import {
+  createProviderAdapter,
+  ProviderError,
+  type AgentTurn,
+  type ProviderResponse,
+  type ProviderToolCall
+} from './providers'
 import { describeToolCall, executeTool, TOOL_DEFINITIONS, type ToolImage, type ToolResult } from './tools'
 
 const MAX_ROUNDS = 12
@@ -44,6 +57,7 @@ export class AgentRuntime {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
 
   private emit: (event: AgentEvent) => void = () => undefined
+  private settingsChanged: (settings: SettingsView) => void = () => undefined
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -54,6 +68,10 @@ export class AgentRuntime {
 
   setEmitter(emit: (event: AgentEvent) => void): void {
     this.emit = emit
+  }
+
+  setSettingsEmitter(emit: (settings: SettingsView) => void): void {
+    this.settingsChanged = emit
   }
 
   getTask(): TaskState {
@@ -166,12 +184,38 @@ export class AgentRuntime {
           'Open Settings and add an API key for the selected provider.'
         )
       }
-      if (!settings.model) {
+      const freeAuto = settings.provider === 'openrouter' && settings.modelMode === 'free-auto'
+      if (!settings.model && !freeAuto) {
         throw new ProviderError('No model is selected.', undefined, 'Open Settings and choose a model.')
       }
 
       const adapter = createProviderAdapter(settings.provider)
       const baseUrl = this.settings.resolveBaseUrl()
+      let activeModel = settings.model
+      let freeModels: ModelOption[] = []
+      let freeIndex = 0
+
+      if (freeAuto) {
+        const catalog = await fetchProviderModels({
+          provider: 'openrouter',
+          baseUrl,
+          apiKey
+        })
+        freeModels = rankFreeModels(catalog.models)
+        if (freeModels.length === 0) {
+          throw new ProviderError(
+            'OpenRouter returned no free models right now.',
+            undefined,
+            'Choose a specific model in Settings, or try again when OpenRouter has free capacity.'
+          )
+        }
+        const current = freeModels.findIndex((model) => model.id === settings.model)
+        freeIndex = current >= 0 ? current : 0
+        activeModel = freeModels[freeIndex].id
+        // Show the candidate now, but only persist it once it actually answers.
+        this.setTask({ model: activeModel, activity: `Using free model ${freeModels[freeIndex].name}` })
+      }
+
       const history = this.historyTurns(conversation, assistant.id)
       const system = buildSystemPrompt()
       let text = assistant.content
@@ -183,15 +227,64 @@ export class AgentRuntime {
         this.setTask({ status: 'running', activity: rounds === 1 ? 'Thinking' : 'Reviewing tool results' })
 
         const turns = [...history]
-        const response = await adapter.complete({
-          model: settings.model,
-          system,
-          turns,
-          tools: TOOL_DEFINITIONS,
-          baseUrl,
-          apiKey,
-          signal: controller.signal
-        })
+        let response: ProviderResponse | undefined
+        if (freeAuto) {
+          let lastError: unknown
+          // A free model can be listed yet refuse direct API traffic (403) or
+          // be rate-limited, and several may do so in a row. Walk a wider
+          // window than one or two so a task does not fail on a bad first pick.
+          for (let attempt = freeIndex; attempt < Math.min(freeModels.length, freeIndex + 8); attempt += 1) {
+            const candidate = freeModels[attempt]
+            try {
+              response = await adapter.complete({
+                model: candidate.id,
+                system,
+                turns,
+                tools: TOOL_DEFINITIONS,
+                baseUrl,
+                apiKey,
+                signal: controller.signal
+              })
+              freeIndex = attempt
+              const switched = candidate.id !== activeModel
+              activeModel = candidate.id
+              this.rememberFreeModel(activeModel)
+              this.setTask({ model: activeModel })
+              if (switched) {
+                this.emit({
+                  type: 'notice',
+                  level: 'info',
+                  message: `Free model switched to ${candidate.name}.`
+                })
+              }
+              break
+            } catch (error) {
+              if (!isRetryableFreeModelError(error)) throw error
+              lastError = error
+              logger.warn('agent', `free model ${candidate.id} failed, trying another`)
+              const next = freeModels[attempt + 1]
+              this.setTask({
+                status: 'running',
+                activity: next ? `Free model unavailable, trying ${next.name}` : 'No free model answered'
+              })
+            }
+          }
+          if (!response) {
+            throw lastError instanceof Error
+              ? lastError
+              : new ProviderError('No free OpenRouter model answered.', undefined, 'Try again later or choose a specific model.')
+          }
+        } else {
+          response = await adapter.complete({
+            model: activeModel,
+            system,
+            turns,
+            tools: TOOL_DEFINITIONS,
+            baseUrl,
+            apiKey,
+            signal: controller.signal
+          })
+        }
 
         if (response.text) {
           text = text ? `${text}\n\n${response.text}` : response.text
@@ -246,7 +339,7 @@ export class AgentRuntime {
       }
 
       assistant.content = text.trim() ? text.trim() : fallbackSummary(assistant.toolCalls)
-      assistant.model = settings.model
+      assistant.model = activeModel
       this.touch(conversation)
       this.persistMessage(conversation, assistant)
       this.setTask({ status: 'done', activity: undefined })
@@ -421,6 +514,20 @@ export class AgentRuntime {
     }
   }
 
+  /** Persists the free model that actually answered, so Settings can show it. */
+  private rememberFreeModel(model: string): void {
+    const current = this.settings.get()
+    if (
+      current.provider !== 'openrouter' ||
+      current.modelMode !== 'free-auto' ||
+      current.model === model
+    ) {
+      return
+    }
+    this.settings.update({ model })
+    this.settingsChanged(this.settings.getView())
+  }
+
   private touch(conversation: Conversation): void {
     conversation.updatedAt = Date.now()
     this.conversations.save(conversation)
@@ -449,6 +556,7 @@ class AbortError extends Error {
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || /aborted|abort/i.test(error.message))
 }
+
 
 function truncateTitle(text: string): string {
   const single = text.replace(/\s+/g, ' ').trim()

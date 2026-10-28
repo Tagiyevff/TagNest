@@ -3,6 +3,83 @@
 All notable changes to TagNest are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 — 2026-10-28
+
+### Added
+
+- **Automatic model discovery.** Saving an API key now fetches the provider's real model list and
+  fills a model dropdown; no model ID has to be typed. Supported sources:
+  - OpenAI and custom OpenAI-compatible servers: `GET /models`
+  - Anthropic: `GET /v1/models` with pagination
+  - Google Gemini: `GET /models`, keeping models whose `supportedGenerationMethods` includes
+    `generateContent`
+  - OpenRouter: `GET /models`, including free-model metadata
+  - Ollama: `GET /api/tags`
+- A **Refresh** button re-fetches the list; replacing or clearing a key also reloads/clears it. Lists
+  are provider-scoped and are never mixed.
+- Model options show the display name, real ID, context window and capabilities when the provider
+  reports them. The selected model's details appear below the selector.
+- A **Custom model ID…** fallback for servers that do not expose a model list. It is optional; the
+  normal path never requires typing an ID.
+- **OpenRouter Free — Automatic.** The model dropdown gains a `Free — Automatic` entry. Selecting it
+  fetches OpenRouter's live free models, ranks tool-capable models with the largest context first,
+  and starts with the top candidate, switching automatically if it refuses the request. The Settings
+  panel shows `Currently using: <real-model-id>`.
+- Free-model fallback in both the agent and **Test connection**: 403, 404, 429 and 5xx from one free
+  model move on to the next candidate (up to eight), with real status values. The agent shows
+  "Free model unavailable, trying …" while switching and a notice with the model that answered.
+- The actual free model that answered is persisted back to settings and broadcast to the renderer,
+  so the footer and `Currently using` stay truthful.
+- `provider:models` IPC channel with zod-validated settings access and `onSettings` renderer event.
+- 15 new unit tests for the OpenAI, Anthropic, Gemini, OpenRouter and Ollama parsers, model URL/auth
+  handling, free ranking, free fallback and the free-automatic connection test.
+
+### Changed
+
+- `AppSettings` and `SettingsView` now carry `modelMode: 'manual' | 'free-auto'`; existing settings
+  files load as `manual`, and switching away from OpenRouter resets the mode.
+- The chat footer displays **Free — Automatic** instead of the internal free-model ID; the real ID is
+  available in Settings and on the assistant message.
+- Settings no longer remounts on every model change; model lists and local fields stay stable while
+  the backend broadcasts settings updates.
+
+### Fixed
+
+- A free OpenRouter model can be listed as free yet return HTTP 403 ("only available on agentic
+  harnesses"). The old single-model path failed immediately; both the test and the agent now try the
+  next ranked free model and report the real result.
+
+## 0.3.0 — 2026-10-28
+
+### Added
+
+- **Linux app projects.** The agent can build, test and run a real application inside the guest
+  instead of only editing loose files.
+  - `app_create` scaffolds a project in `~/workspace/apps/<name>` from a `web` or `cli` template,
+    with a title, optional port, starter source, README and test script.
+  - `app_test` runs the project's real `sh test.sh` and returns its actual stdout, stderr and exit
+    code. Failures are reported as failures; nothing is marked passed without a zero exit code.
+  - `app_run` starts web projects with Python's `http.server` on a local port, waits for the URL to
+    answer, opens it in Firefox on the embedded desktop and verifies that a browser window is
+    visible. CLI projects open in a real `xfce4-terminal` window. It returns the real PID and URL.
+  - `app_list` and `app_stop` expose project state and kill the whole process group on stop.
+  - Starters include a clickable HTML/CSS/JS demo and a shell CLI, each with tests that pass out of
+    the box, so the model starts from working code and changes it.
+- A fourth empty-chat suggestion for building and running a small Linux app, in English and
+  Azerbaijani.
+- The system prompt now has an explicit “Building an app inside Linux” workflow: create, edit, test,
+  fix, run, screenshot and report the real result.
+- 10 unit tests for app-name/port validation, template contents, metadata parsing, HTML escaping and
+  path confinement.
+
+### Fixed
+
+- Added `DISPLAY=:1` when opening a CLI project terminal, so `xfce4-terminal` does not fail with
+  “cannot open display”.
+- The first web-server implementation used `busybox httpd`, which is not present in the pinned
+  Alpine image. It now uses the preinstalled Python 3 `http.server`, and the real-VM smoke test
+  checks the served HTML before and after stopping the app.
+
 ## 0.2.0 — 2026-10-28
 
 ### Added

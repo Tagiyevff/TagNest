@@ -83,6 +83,18 @@ describe('SettingsStore', () => {
     expect(store.resolveBaseUrl()).toBe('http://127.0.0.1:1234/v1')
   })
 
+  it('keeps free-auto only for OpenRouter and resets it on a provider switch', () => {
+    const store = new SettingsStore(tempDir(), secrets)
+    store.update({ provider: 'openrouter', modelMode: 'free-auto' })
+    expect(store.get().modelMode).toBe('free-auto')
+    store.update({ model: 'openrouter/manual-model', modelMode: 'manual' })
+    expect(store.get().modelMode).toBe('manual')
+    store.update({ provider: 'openai' })
+    expect(store.get().modelMode).toBe('manual')
+    store.update({ modelMode: 'free-auto' })
+    expect(store.get().modelMode).toBe('manual')
+  })
+
   it('clamps resource limits and persists them', () => {
     const dir = tempDir()
     const store = new SettingsStore(dir, secrets)

@@ -6,8 +6,10 @@ import type {
   ConversationSummary,
   GuestStats,
   ProviderId,
+  ProviderModelsResult,
   ProviderTestResult,
   RuntimeState,
+  SettingsView,
   UpdateInfo,
   WorkspaceDownloadResult,
   WorkspaceListing,
@@ -58,11 +60,13 @@ export interface TagNestApi {
   }
   provider: {
     test: () => Promise<ProviderTestResult>
+    models: () => Promise<ProviderModelsResult>
   }
   app: {
     checkUpdates: () => Promise<UpdateInfo>
   }
   onRuntimeState: (listener: (state: RuntimeState) => void) => () => void
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void
+  onSettings: (listener: (settings: SettingsView) => void) => () => void
   onApprovalRequest?: (listener: (request: ApprovalRequest) => void) => () => void
 }

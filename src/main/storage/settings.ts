@@ -54,6 +54,8 @@ export class SettingsStore {
       next.provider = patch.provider
       const info = providerInfo(patch.provider)
       next.model = patch.model ?? info.defaultModel
+      next.modelMode =
+        patch.provider === 'openrouter' && patch.modelMode === 'free-auto' ? 'free-auto' : 'manual'
       // Honour an endpoint supplied together with the provider switch; only
       // fall back to the provider's default when none was sent.
       next.baseUrl = info.supportsBaseUrl
@@ -64,6 +66,7 @@ export class SettingsStore {
     } else {
       if (patch.provider) next.provider = patch.provider
       if (typeof patch.model === 'string' && patch.model.trim()) next.model = patch.model.trim()
+      if (patch.modelMode) next.modelMode = patch.modelMode
       if (typeof patch.baseUrl === 'string') next.baseUrl = patch.baseUrl.trim()
     }
 
@@ -97,6 +100,7 @@ export class SettingsStore {
     return {
       provider,
       model,
+      modelMode: provider === 'openrouter' && raw.modelMode === 'free-auto' ? 'free-auto' : 'manual',
       baseUrl,
       language: raw.language === 'az' ? 'az' : 'en',
       memoryMB: clamp(Number(raw.memoryMB) || DEFAULT_SETTINGS.memoryMB, 1024, 16384),

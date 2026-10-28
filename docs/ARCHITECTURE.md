@@ -30,6 +30,8 @@ src/
       provider-test.ts  one real request to the configured provider
       providers/     OpenAI-compatible, Anthropic, Gemini adapters
     updates.ts       GitHub Releases check + semver comparison
+    apps/
+      projects.ts    Linux app projects: templates, metadata, test, run and stop
     workspace/
       files.ts       Windows↔Linux SFTP bridge, listing and symlink-safe checks
   renderer/
@@ -107,6 +109,37 @@ The Linux panel's file drawer calls `workspace:list` and shows directories first
 memory/disk/load readings come from `runtime:stats`, which runs `free`, `df` and reads
 `/proc/loadavg` inside the guest and caches the parsed result for four seconds in `LinuxRuntime`.
 
+## Linux app projects
+
+`apps/projects.ts` turns “build me an app” into a real project instead of a pile of loose files.
+Every project lives at `/home/tagnest/workspace/apps/<name>` and carries a small
+`tagnest-app.json` file with `format: 1`, the display title, template, optional port and timestamps.
+The directory listing ignores anything without valid metadata, so a hand-made folder is not
+mistaken for a project.
+
+| Template | Files | How `app_run` starts it |
+|---|---|---|
+| `web` | `index.html`, `styles.css`, `app.js`, `test.sh`, `README.md` | `setsid python3 -m http.server <port> --bind 127.0.0.1` in the project directory, then a bounded `wget` readiness probe and `tagnest-open` in Firefox |
+| `cli` | `app.sh`, `run.sh`, `test.sh`, `README.md` | `xfce4-terminal --disable-server` on `DISPLAY=:1`, running `run.sh` |
+
+Names are normalized to lowercase letters, digits and single hyphens; `..`, slashes and existing
+projects are rejected rather than overwritten. Ports must be 1024–65535 and are checked with
+`netstat` before creation and before start. The PID from the detached session is written to
+`.tagnest.pid`; `app_stop` signals the whole process group (`kill -TERM -- -PID`, then `KILL`) and
+removes the file. `app_list` verifies the PID with `kill -0` instead of trusting the file.
+
+`app_test` runs `sh test.sh` with the project as the working directory over SSH and returns the
+real exit code, stdout and stderr. The agent is instructed to fix failures and rerun, then to take a
+`desktop_screenshot` after `app_run` so it can confirm the window is actually visible. For stacks
+outside the templates the agent still writes project files under `~/workspace`, installs
+prerequisites (behind the normal approval gate) and uses `run_command`/`start_process`; the app
+project tools are a working baseline, not the only supported path.
+
+The app server listens on guest loopback only. It is reachable from the guest browser and from the
+agent over SSH, not from the Windows host. Project files are ordinary files in the persistent home
+disk, so they survive VM and app restarts; they are not written to the host workspace or the
+repository.
+
 ## Agent loop
 
 1. The renderer sends text over validated IPC.
@@ -129,7 +162,8 @@ memory/disk/load readings come from `runtime:stats`, which runs `free`, `df` and
    a crash or restart. Aborted tool calls are recorded as `cancelled`.
 
 Tool groups: `run_command`, `start_process`/`list_processes`/`stop_process`, the SFTP file tools,
-`system_info`, the `xdotool` desktop tools (`desktop_move`, `desktop_click` with button/count,
+`system_info`, the app-project tools (`app_create`, `app_list`, `app_test`, `app_run`, `app_stop`),
+the `xdotool` desktop tools (`desktop_move`, `desktop_click` with button/count,
 `desktop_scroll`, `desktop_type`, `desktop_key`, `desktop_windows`, `desktop_focus`, `launch_app`),
 `desktop_screenshot` (vision) and the internet tools:
 
@@ -168,6 +202,40 @@ new VM.
 that interface and mapping the neutral transcript. OpenAI/OpenRouter/Ollama/custom share the
 Chat Completions adapter; Anthropic and Gemini have dedicated adapters because their tool schemas
 and message shapes differ.
+
+### Model discovery
+
+`src/main/agent/providers/models.ts` reads each provider's real model-list endpoint. Nothing is a
+hardcoded catalogue; the only fallback is the manual **Custom model ID…** field.
+
+| Provider | Endpoint | Notes |
+|---|---|---|
+| OpenAI / custom | `GET {baseUrl}/models` | OpenAI filters obvious non-chat IDs; custom servers are not filtered |
+| Anthropic | `GET {baseUrl}/v1/models?limit=100` | follows `has_more` / `last_id` for up to 10 pages |
+| Gemini | `GET {baseUrl}/models?pageSize=1000` | keeps models whose `supportedGenerationMethods` include `generateContent`; follows `nextPageToken` |
+| OpenRouter | `GET {baseUrl}/models` | free flag from `:free` ID or zero prompt/completion price; capabilities from `supported_parameters` and input modalities |
+| Ollama | `GET {baseUrl without /v1}/api/tags` | local tags; embedding-only tags are skipped |
+
+The list is never cached across requests: opening Settings, saving/replacing a key, refreshing, or
+changing provider each performs a real request. Failures return the provider's HTTP status, body and
+a status-specific hint; an empty list is reported as empty rather than filled with invented models.
+`listConfiguredProviderModels` is the IPC entry point, and the renderer only receives the catalog.
+
+### Free — Automatic (OpenRouter)
+
+`modelMode: 'free-auto'` is valid only when `provider === 'openrouter'`; the settings store resets it
+on any other provider. In this mode the runtime does not trust a single saved ID:
+
+1. Fetch `/models` and keep entries whose price is zero or whose ID ends in `:free`.
+2. Rank tool-capable models first, then by context length (`rankFreeModels`). Tool support matters
+   because the agent cannot operate Linux without tool calls.
+3. Walk up to eight ranked candidates. 403 (listed but restricted to another harness), 404, 429 and
+   5xx move to the next candidate; the activity line names the candidate being tried.
+4. Persist the model that actually answered and broadcast the updated settings, so the footer and
+   `Currently using:` stay truthful.
+
+A free model can answer the connection test and still be rate-limited during a task; because the
+list is re-fetched per run, a stale saved ID is not a hard dependency.
 
 ## Security boundaries
 

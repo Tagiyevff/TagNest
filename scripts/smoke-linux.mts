@@ -23,6 +23,7 @@ if (process.env.TAGNEST_SMOKE_CLEAN === '1' && existsSync(dataDir)) {
 const settings: AppSettings = {
   provider: 'openai',
   model: 'gpt-4.1-mini',
+  modelMode: 'manual',
   baseUrl: '',
   language: 'en',
   memoryMB: Number(process.env.TAGNEST_SMOKE_MEMORY ?? 3072),

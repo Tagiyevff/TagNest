@@ -21,6 +21,7 @@ const runtimeDataDir = resolve(process.env.TAGNEST_SMOKE_DIR ?? '.local/smoke-da
 const settings: AppSettings = {
   provider: 'custom',
   model: 'mock-model',
+  modelMode: 'manual',
   baseUrl: 'http://127.0.0.1:0/v1',
   language: 'en',
   memoryMB: 3072,

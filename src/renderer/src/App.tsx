@@ -138,10 +138,12 @@ export default function App(): JSX.Element {
 
     const offRuntime = api.onRuntimeState(setRuntime)
     const offAgent = api.onAgentEvent(handleAgentEvent)
+    const offSettings = api.onSettings(setSettings)
     return () => {
       disposed = true
       offRuntime()
       offAgent()
+      offSettings()
     }
   }, [handleAgentEvent])
 
@@ -346,7 +348,7 @@ export default function App(): JSX.Element {
       />
       {settingsOpen ? (
         <SettingsDialog
-          key={`${settings.provider}:${settings.model}`}
+          key={settings.provider}
           t={t}
           version={version}
           settings={settings}

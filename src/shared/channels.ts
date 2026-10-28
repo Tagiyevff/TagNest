@@ -29,8 +29,10 @@ export const IPC = {
   workspaceUpload: 'workspace:upload',
   workspaceDownload: 'workspace:download',
   providerTest: 'provider:test',
+  providerModels: 'provider:models',
   appCheckUpdates: 'app:check-updates',
   appOpenLogs: 'app:open-logs',
   eventRuntime: 'event:runtime',
-  eventAgent: 'event:agent'
+  eventAgent: 'event:agent',
+  eventSettings: 'event:settings'
 } as const

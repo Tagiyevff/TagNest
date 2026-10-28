@@ -1,4 +1,12 @@
 import type { DesktopPointer } from '../../shared/types'
+import {
+  createAppProject,
+  listAppProjects,
+  runAppProject,
+  stopAppProject,
+  testAppProject,
+  type AppTemplate
+} from '../apps/projects'
 import { DESKTOP_HEIGHT, DESKTOP_WIDTH, GUEST_WORKSPACE } from '../linux/guest'
 import type { GuestClient } from '../linux/ssh'
 import { shellQuote } from '../linux/ssh'
@@ -112,6 +120,62 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: { filter: { type: 'string', description: 'Optional text filter.' } }
+    }
+  },
+  {
+    name: 'app_create',
+    description:
+      'Create a real Linux app project in /home/tagnest/workspace/apps/<name> with starter files. Use this when the user asks you to build a Linux application: create the project, edit its files, test it with app_test, then run it with app_run. Template "web" is a small HTTP app (HTML/CSS/JS) served by Python http.server and shown in Firefox; template "cli" is a terminal app.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Project name: 1-32 lowercase letters, digits or hyphens (for example notes-app).'
+        },
+        title: { type: 'string', description: 'Human-readable app title shown in the window and on the page.' },
+        template: { type: 'string', enum: ['web', 'cli'], description: 'Starter template: web or cli.' },
+        port: {
+          type: 'number',
+          description: 'For web apps only: local port 1024-65535. Default 8080; use another port if it is taken.'
+        }
+      },
+      required: ['name', 'template']
+    }
+  },
+  {
+    name: 'app_list',
+    description:
+      'List the app projects in /home/tagnest/workspace/apps with their template, port, running state and real URL.',
+    parameters: { type: 'object', properties: {} }
+  },
+  {
+    name: 'app_test',
+    description:
+      'Run the project test script (sh test.sh) inside a real Linux app project and return its actual output and exit code. Use it after editing app files; fix the code and test again until it passes.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'App project name.' } },
+      required: ['name']
+    }
+  },
+  {
+    name: 'app_run',
+    description:
+      'Run an app project in the Linux guest. Web apps start a local HTTP server and open the page in Firefox on the desktop; CLI apps open a terminal window. Returns the real URL, PID and startup result.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'App project name.' } },
+      required: ['name']
+    }
+  },
+  {
+    name: 'app_stop',
+    description: 'Stop a running app project and its process group inside the Linux guest.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'App project name.' } },
+      required: ['name']
     }
   },
   {
@@ -339,6 +403,32 @@ export function describeToolCall(
       return { title: 'Inspect Linux system', assessment: { risk: 'safe', approvalRequired: false } }
     case 'list_processes':
       return { title: 'List processes', assessment: { risk: 'safe', approvalRequired: false } }
+    case 'app_create':
+      return {
+        title: 'Create a Linux app project',
+        summary: `${String(args.name ?? '')} (${String(args.template ?? 'web')})`,
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'app_list':
+      return { title: 'List Linux app projects', assessment: { risk: 'safe', approvalRequired: false } }
+    case 'app_test':
+      return {
+        title: 'Test a Linux app project',
+        summary: String(args.name ?? ''),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'app_run':
+      return {
+        title: 'Run a Linux app project',
+        summary: String(args.name ?? ''),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'app_stop':
+      return {
+        title: 'Stop a Linux app project',
+        summary: String(args.name ?? ''),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
     case 'desktop_click': {
       const x = clampCoordinate(args.x, DESKTOP_WIDTH)
       const y = clampCoordinate(args.y, DESKTOP_HEIGHT)
@@ -442,6 +532,16 @@ export async function executeTool(
         return await startProcessTool(args, guest, options.signal)
       case 'list_processes':
         return await listProcessesTool(args, guest)
+      case 'app_create':
+        return await appCreateTool(args, guest)
+      case 'app_list':
+        return await appListTool(guest)
+      case 'app_test':
+        return await appTestTool(args, guest)
+      case 'app_run':
+        return await appRunTool(args, guest)
+      case 'app_stop':
+        return await appStopTool(args, guest)
       case 'stop_process':
         return await stopProcessTool(args, guest)
       case 'desktop_click':
@@ -1138,6 +1238,57 @@ async function launchAppTool(args: Record<string, unknown>, guest: GuestClient):
     output: result.exitCode === 0 ? `Opened ${app} on the Linux desktop.` : `Could not open ${app}.`,
     isError: result.exitCode !== 0
   }
+}
+
+async function appCreateTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+  const template = String(args.template ?? 'web') as AppTemplate
+  const result = await createAppProject(guest, {
+    name: String(args.name ?? ''),
+    title: typeof args.title === 'string' ? args.title : undefined,
+    template,
+    port: args.port === undefined ? undefined : Number(args.port)
+  })
+  return { output: result.message, isError: !result.ok }
+}
+
+async function appListTool(guest: GuestClient): Promise<ToolResult> {
+  const projects = await listAppProjects(guest)
+  if (projects.length === 0) {
+    return {
+      output:
+        'No app projects yet. Create one with app_create (template "web" or "cli") in /home/tagnest/workspace/apps.',
+      isError: false
+    }
+  }
+  return {
+    output: projects
+      .map((project) => {
+        const state = project.running ? `running (PID ${project.pid})` : 'stopped'
+        return `${project.name} · ${project.title} · ${project.template}${
+          project.port ? ` · port ${project.port}` : ''
+        } · ${state}${project.url ? ` · ${project.url}` : ''}`
+      })
+      .join('\n'),
+    isError: false
+  }
+}
+
+async function appTestTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+  const result = await testAppProject(guest, String(args.name ?? ''))
+  return {
+    output: `${result.message}\ncommand: ${result.command}\n${result.output}`,
+    isError: !result.ok
+  }
+}
+
+async function appRunTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+  const result = await runAppProject(guest, String(args.name ?? ''))
+  return { output: result.message, isError: !result.ok }
+}
+
+async function appStopTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+  const result = await stopAppProject(guest, String(args.name ?? ''))
+  return { output: result.message, isError: !result.ok }
 }
 
 function formatExecOutput(result: {

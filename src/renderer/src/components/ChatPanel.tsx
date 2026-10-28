@@ -143,7 +143,7 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
             <h1>{t('emptyTitle')}</h1>
             <p>{t('emptyText')}</p>
             <div className="suggestions">
-              {[t('suggestion1'), t('suggestion2'), t('suggestion3')].map((suggestion) => (
+              {[t('suggestion1'), t('suggestion2'), t('suggestion3'), t('suggestion4')].map((suggestion) => (
                 <Suggestion key={suggestion} text={suggestion} onSend={props.onSend} />
               ))}
             </div>
@@ -209,7 +209,11 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
         <span className={`meta-dot ${runtimePhase === 'running' ? 'online' : ''}`} />
         <span>{provider?.label ?? settings.provider}</span>
         <span className="meta-sep">/</span>
-        <span className="meta-model">{settings.model || t('modelNotConfigured')}</span>
+        <span className="meta-model" title={settings.modelMode === 'free-auto' ? settings.model : undefined}>
+          {settings.modelMode === 'free-auto'
+            ? t('freeAutomatic')
+            : settings.model || t('modelNotConfigured')}
+        </span>
         <button type="button" className="meta-settings" onClick={props.onOpenSettings}>
           {t('settings')}
         </button>

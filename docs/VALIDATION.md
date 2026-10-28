@@ -13,20 +13,174 @@ results. It is deliberately specific about what was **not** verified.
 ```text
 npm run typecheck   PASS
 npm run lint        PASS (0 problems)
-npm test            PASS (8 files, 64 tests)
+npm test            PASS (10 files, 89 tests)
 npm run build       PASS (electron-vite, main + preload + renderer)
-npm run package:win PASS (NSIS, release/TagNest-0.2.0-x64.exe, 119 MB)
+npm run package:win PASS (0.3.0, NSIS, release/TagNest-0.3.0-x64.exe, 119 MB; 0.4.0 not repackaged yet)
 ```
 
-The 64 tests include the new update-check/version comparison, guest stats parser, upload path
-sanitizer, workspace listing confinement (including a symlink that resolves to `/etc`), download
-success/cancel with a mocked native dialog, and the real provider connection check against a mock
-HTTP endpoint (success, missing key, 401, unreachable local server).
+The 89 tests include the new app-project tests (name and port validation, starter file contents,
+metadata parsing and rejection, HTML escaping), the update-check/version comparison, guest stats
+parser, upload path sanitizer, workspace listing confinement (including a symlink that resolves to
+`/etc`), download success/cancel with a mocked native dialog, and the real provider connection
+check against a mock HTTP endpoint (success, missing key, 401, unreachable local server).
 
 The unit tests cover the provider adapters against local mock HTTP servers (including a 401 mapped to
 a credential error, a body with data appended after the JSON document, a non-JSON body and an empty
 body), secret redaction, storage/settings persistence, path confinement helpers and the web helpers
 (URL validation, HTML→text conversion, search-result parsing).
+
+## 0.4.0 automatic model discovery and OpenRouter Free (2026-10-28)
+
+### Unit tests, typecheck, lint
+
+```text
+npm run typecheck   PASS
+npm run lint        PASS (0 problems)
+npm test            PASS (10 files, 89 tests)
+npm run build       PASS
+```
+
+`src/main/agent/providers/models.test.ts` covers the real response shapes of OpenAI, OpenRouter,
+Anthropic, Gemini and Ollama (names, IDs, context, capabilities, free flags, pagination parsing),
+URL/auth construction, error statuses and free-model ranking. `provider-test.test.ts` covers the
+live connection test, including a 403 free model followed by a working one.
+
+### Real OpenRouter model list
+
+A one-off script called the production `fetchProviderModels` against
+`https://openrouter.ai/api/v1/models` (no renderer, no mock):
+
+```text
+models: 464  free: 16  source: https://openrouter.ai/api/v1/models
+- Thinking Machines: Inkling Small (free) (thinkingmachines/inkling-small:free) ctx=1048576 caps=chat,tools,vision
+- NVIDIA: Nemotron 3 Ultra (free) (nvidia/nemotron-3-ultra-550b-a55b:free) ctx=1000000 caps=chat,tools
+```
+
+### Live Electron: model dropdown and Free — Automatic
+
+The production bundle was launched and driven through CDP against the real VM. Switching the
+provider to OpenRouter in the running app made the Settings dialog load the real 464-model list into
+the `<select>`; the labels showed name · ID · context. Selecting **Free — Automatic** produced
+`Currently using: thinkingmachines/inkling-small:free` and its explanatory note. Pressing
+**Test connection** walked the ranked free models and returned the real provider reply:
+
+```text
+Connected to nvidia/nemotron-3-ultra-550b-a55b:free in 2873 ms.
+Currently using: nvidia/nemotron-3-ultra-550b-a55b:free
+```
+
+The settings panel then persisted that model, and the dialog and footer agreed. The stored Gemini
+configuration was restored afterwards from a file backup.
+
+### Real agent task on the new build (Free — Automatic)
+
+A fresh conversation was created through the preload bridge, the provider was switched to
+OpenRouter **Free — Automatic**, and this task was sent:
+
+> Run uname -r in the Linux terminal and report the exact output. Do not create or change files.
+
+The agent fetched the free list, tried `thinkingmachines/inkling-small:free` and
+`thinkingmachines/inkling:free` (both refused direct API traffic), then used
+`nvidia/nemotron-3-ultra-550b-a55b:free`. It called `run_command` against the real guest and replied
+with the actual output:
+
+```text
+`6.18.58-0-virt`
+```
+
+Task state ended `done` with no message errors. The settings store had been updated to
+`nvidia/nemotron-3-ultra-550b-a55b:free`, proving the answered model is the one persisted. The test
+conversation was deleted and the previous Gemini configuration restored.
+
+An earlier session (visible in `tagnest.log`) had already completed a different free-model agent
+task (`nvidia/nemotron-3.5-super-vl:free`) with a terminal and real kernel output, so this is
+repeatable rather than a one-off.
+
+### Not exercised in this version
+
+- Saving a brand-new key and observing the automatic list refresh in the UI. The real key was
+  already stored, so the code path was covered by the mount effect and unit tests, not clicked.
+- Real model-list calls for OpenAI, Anthropic, Gemini and Ollama. Those endpoints were tested
+  against recorded/mock HTTP shapes only; OpenRouter was the only live list endpoint.
+- A 0.4.0 packaged installer. `npm run package:win` was last run for 0.3.0.
+
+## 0.3.0 Linux app projects (2026-10-28)
+
+### Unit tests and build
+
+`npm test` ran 9 files / 74 tests, including 10 new tests for `src/main/apps/projects.ts`. They
+check name normalization (`../etc`, slashes and uppercase rejected), port range validation, both
+starter templates, executable test scripts, metadata mismatches/malformed JSON, HTML escaping and
+that generated projects stay under `/home/tagnest/workspace/apps`. Typecheck, lint and the
+production build passed.
+
+### Real VM smoke test
+
+`npx tsx .local/logs/app-projects-smoke.mts` booted the existing `.local/smoke-data` Alpine guest
+(WHPX, 2 vCPU, 3 GB) and exercised the project module against the real guest over SSH/SFTP:
+
+```text
+app_create → Created "Smoke App" (web) … files: index.html, styles.css, app.js, test.sh, README.md, tagnest-app.json
+app_test   → exit 0, stdout: web project OK: index.html 676 bytes
+app_run    → Running "Smoke App" at http://127.0.0.1:8099/ (PID 2918). The page is open in Firefox …
+wget       → <!doctype html> … <title>Smoke App</title>
+xdotool    → 23068674|Smoke App — Mozilla Firefox
+app_list   → smoke-app … web · port 8099 · running (PID 2918)
+app_stop   → Stopped "Smoke App" (PID 2918)
+wget       → down
+```
+
+CLI template in the same run:
+
+```text
+app_create → Created "Smoke CLI" (cli) …
+app_test   → exit 0, stdout: CLI project OK: Hello, TagNest!
+app_run    → Opened "Smoke CLI" in a terminal window on the Linux desktop (PID 3491)
+xdotool    → window titled "TagNest: Smoke CLI" is visible
+app_stop   → Stopped "Smoke CLI" (PID 3491)
+```
+
+Both test projects were removed after the run.
+
+### Live Electron + model run
+
+The production bundle was launched (`npx electron . --remote-debugging-port=9222`) with the real
+provisioned VM, and the empty-chat suggestion **“Build me a small Linux app, test it and open it on
+the desktop”** was clicked. Gemini 2.5 Flash called `app_list`, `app_create` (`my-first-app`, web),
+`app_test` and `app_run`. The tool cards reported **Create: Done**, **Test: Done**, **Run: Done**,
+and a CDP screenshot of the running app showed Firefox at `http://127.0.0.1:8080/` displaying
+“My First App” with its working counter. No renderer mock was used.
+
+A later request in the same session created `my-second-app`; `app_create` correctly refused the
+existing `my-first-app` instead of overwriting it, and the new project tested and ran. The turn then
+ended with Gemini HTTP 429 (free-tier requests-per-minute quota), not an app or runtime failure.
+All test-created projects were removed afterwards.
+
+The first attempt, against a build that still used `busybox httpd`, failed honestly: the model ran
+`app_test` successfully, `app_run` failed with `httpd: applet not found`, and it asked to install
+`busybox-extras` rather than claiming success. That is why the server moved to the preinstalled
+Python `http.server`, and `app_run` now waits for a visible Firefox window before reporting.
+
+### Packaged build
+
+`npm run package:win` produced `release/TagNest-0.3.0-x64.exe` (119 MB, NSIS, unsigned) and
+`release/win-unpacked`. Launching `release/win-unpacked/TagNest.exe --remote-debugging-port=9223`
+started the real VM (WHPX, guest SSH ready), and the renderer reported:
+
+```json
+{"version":"0.3.0","phase":"running","provider":"gemini"}
+```
+
+The window was then closed and the app shut down cleanly. The installer itself was not run on a
+clean Windows machine.
+
+### Not exercised
+
+- App metadata persistence across a full app restart (projects are ordinary files on the persistent
+guest disk; the module reads that disk on every call).
+- A native GTK/Qt desktop-bundle template, and running an app project on a second port while another
+  app is already listening.
+- App creation by providers other than Gemini.
 
 ## 0.2.0 file bridge, live stats, provider test and updates (2026-10-28)
 

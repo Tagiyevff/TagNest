@@ -9,6 +9,12 @@ export type Language = 'en' | 'az'
 
 export type ProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'ollama' | 'custom'
 
+/**
+ * `free-auto` is only meaningful for OpenRouter: the app resolves a currently
+ * free model from OpenRouter's real model list instead of using a fixed ID.
+ */
+export type ModelMode = 'manual' | 'free-auto'
+
 export type PrivacyMode = 'remote' | 'local'
 
 export interface ProviderInfo {
@@ -88,6 +94,7 @@ export const PROVIDERS: ProviderInfo[] = [
 export interface AppSettings {
   provider: ProviderId
   model: string
+  modelMode: ModelMode
   baseUrl: string
   language: Language
   memoryMB: number
@@ -299,6 +306,33 @@ export interface ProviderTestResult {
   latencyMs?: number
   model?: string
   reply?: string
+}
+
+/** One model returned by a provider's own model-listing endpoint. */
+export interface ModelOption {
+  id: string
+  name: string
+  description?: string
+  contextLength?: number
+  inputTokenLimit?: number
+  outputTokenLimit?: number
+  capabilities?: string[]
+  free?: boolean
+}
+
+export interface ModelCatalog {
+  provider: ProviderId
+  models: ModelOption[]
+  freeModels: ModelOption[]
+  fetchedAt: number
+  source: string
+}
+
+export interface ProviderModelsResult {
+  ok: boolean
+  provider: ProviderId
+  catalog?: ModelCatalog
+  message?: string
 }
 
 export interface UpdateInfo {
