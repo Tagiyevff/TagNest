@@ -898,23 +898,31 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
 
 ## Release pipeline
 
-The published repository was tagged `v0.1.0`, which triggered the `Release` workflow on
-`windows-latest`. Steps that actually ran and passed:
+Tag `v0.7.0` triggered the updated `Release` workflow. Both jobs passed:
 
 ```text
-npm ci                     OK
-npm run typecheck          OK
-npm run lint               OK
-npm test                   4 files, 36 tests passed
-npm run package:win        OK
+Android APK         flutter analyze / flutter test / signed APK   OK
+Windows installer   typecheck / lint / 119 tests / package:win   OK
 ```
 
 The release asset list from the GitHub API, after the run:
 
 ```text
-TagNest-0.1.0-x64.exe           118.8 MB
-TagNest-0.1.0-x64.exe.blockmap    0.1 MB
+TagNest-0.7.0-x64.exe             119.0 MB
+TagNest-0.7.0-x64.exe.blockmap      0.1 MB
+TagNest-mobile-0.7.0.apk           48.3 MB
+latest.yml                         0.0 MB
+SHA256SUMS.txt                     0.0 MB
 ```
 
-Not verified: downloading that asset and installing it on a clean Windows machine, and code
-signing (the installer is unsigned).
+The downloaded APK was verified after the release:
+
+```text
+Signer #1 certificate DN: CN=TagNest, OU=TagNest, O=TagNest, L=Baku, C=AZ
+Signer #1 certificate SHA-256: 767fccd145b32308141854896a20bb0c577f95463192a0a8be934f85a0096523
+```
+
+Earlier `v0.1.0` produced only the Windows installer (118.8 MB + blockmap, 36 tests). The current
+installer and APK are still unsigned/self-signed as described in RELEASING; the Windows installer
+is not code-signed, so SmartScreen warns. Installing either downloaded asset on a clean machine was
+not part of this run (the locally packaged directory and the locally installed APK were tested).
