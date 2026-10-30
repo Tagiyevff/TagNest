@@ -88,6 +88,7 @@ jobs:
                one click runs `winget install SoftwareFreedomConservancy.QEMU` and
                Windows asks for the normal UAC approval.
 
-The first launch downloads the Alpine base image and provisions the desktop —
-expect a few minutes and about 250 MB of downloads; later launches boot straight
-to the desktop. See the README for what works and the known limitations.
+            The first launch downloads the Alpine base image and provisions the
+            desktop — expect a few minutes and about 250 MB of downloads; later
+            launches boot straight to the desktop. See the README for what works
+            and the known limitations.
