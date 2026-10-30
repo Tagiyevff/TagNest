@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   ApprovalRequest,
   AppSnapshot,
+  AutoUpdateState,
   Conversation,
   ConversationSummary,
   GuestStats,
@@ -48,6 +49,7 @@ export interface TagNestApi {
     logs: () => Promise<RuntimeLogs>
     openLogFolder: () => Promise<{ ok: boolean }>
     stats: () => Promise<GuestStats | null>
+    installQemu: () => Promise<RuntimeState>
   }
   files: {
     list: (path?: string) => Promise<WorkspaceListing>
@@ -65,8 +67,14 @@ export interface TagNestApi {
   app: {
     checkUpdates: () => Promise<UpdateInfo>
   }
+  updates: {
+    state: () => Promise<AutoUpdateState>
+    check: () => Promise<AutoUpdateState>
+    install: () => Promise<{ ok: true }>
+  }
   onRuntimeState: (listener: (state: RuntimeState) => void) => () => void
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void
   onSettings: (listener: (settings: SettingsView) => void) => () => void
+  onUpdateState: (listener: (state: AutoUpdateState) => void) => () => void
   onApprovalRequest?: (listener: (request: ApprovalRequest) => void) => () => void
 }

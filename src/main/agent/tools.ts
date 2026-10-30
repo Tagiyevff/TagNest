@@ -7,6 +7,7 @@ import {
   testAppProject,
   type AppTemplate
 } from '../apps/projects'
+import type { GuestBrowser, BrowserPage } from '../linux/browser'
 import { DESKTOP_HEIGHT, DESKTOP_WIDTH, GUEST_WORKSPACE } from '../linux/guest'
 import type { GuestClient } from '../linux/ssh'
 import { shellQuote } from '../linux/ssh'
@@ -264,11 +265,78 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'open_url',
     description:
-      'Open a URL in Firefox on the Linux desktop as a new tab in the existing browser window. Returns only after a browser process is actually running.',
+      'Open a URL in the visible TagNest browser on the Linux desktop. Reuses the same window and returns the loaded page. Prefer browser_open when you also want the page text and clickable elements in one step.',
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', description: 'Absolute http:// or https:// URL to open.' } },
       required: ['url']
+    }
+  },
+  {
+    name: 'browser_open',
+    description:
+      'Open a URL in the visible TagNest automation browser (Chromium) on the Linux desktop, wait for it to load, and return its real title, URL, visible text and numbered interactive elements. This reuses one window for the whole task, so the page you open is the page you later click and read.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Absolute http:// or https:// URL to open.' } },
+      required: ['url']
+    }
+  },
+  {
+    name: 'browser_read',
+    description:
+      'Read the page currently open in the TagNest browser: real title, URL, visible text and numbered interactive elements. Call it after navigation or after an action changes the page, before deciding what to click.',
+    parameters: { type: 'object', properties: {} }
+  },
+  {
+    name: 'browser_click',
+    description:
+      'Click an element in the TagNest browser by its ref from browser_read, a CSS selector, or its visible text. Uses real mouse events at the element centre, so menus and JavaScript handlers behave like they do for a person. Returns the resulting URL and title.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Element number from the latest browser_read / browser_open result.' },
+        selector: { type: 'string', description: 'CSS selector, if you know one.' },
+        text: { type: 'string', description: 'Visible text of a link or button, case-insensitive.' }
+      }
+    }
+  },
+  {
+    name: 'browser_type',
+    description:
+      'Type into a field in the TagNest browser, replacing its current contents with real keyboard input. Target it by ref, CSS selector, or nearby text; leave all targets empty to use the focused field. Optionally press Enter to submit.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Field number from the latest browser_read / browser_open result.' },
+        selector: { type: 'string', description: 'CSS selector for the field.' },
+        text: { type: 'string', description: 'Text to type.' },
+        submit: { type: 'boolean', description: 'Press Enter after typing (default false).' }
+      },
+      required: ['text']
+    }
+  },
+  {
+    name: 'browser_screenshot',
+    description:
+      'Capture the page in the TagNest browser and look at it as an image. Use it when layout, images or visual state matter; use browser_read for text and element refs.',
+    parameters: { type: 'object', properties: {} }
+  },
+  {
+    name: 'browser_back',
+    description: 'Go back one page in the TagNest browser and return the page that is now open.',
+    parameters: { type: 'object', properties: {} }
+  },
+  {
+    name: 'browser_scroll',
+    description: 'Scroll the page in the TagNest browser and return the real scroll position.',
+    parameters: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', description: 'up or down.' },
+        amount: { type: 'number', description: 'Number of screens, default 1, max 10.' }
+      },
+      required: ['direction']
     }
   },
   {
@@ -470,9 +538,37 @@ export function describeToolCall(
         assessment: { risk: 'safe', approvalRequired: false }
       }
     case 'open_url':
+    case 'browser_open':
       return {
         title: 'Open a page in the browser',
         summary: String(args.url ?? ''),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'browser_read':
+      return { title: 'Read the page', assessment: { risk: 'safe', approvalRequired: false } }
+    case 'browser_click':
+      return {
+        title: 'Click on the page',
+        summary:
+          args.ref !== undefined
+            ? `element ${String(args.ref)}`
+            : String(args.text ?? args.selector ?? ''),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'browser_type':
+      return {
+        title: 'Type on the page',
+        summary: previewText(String(args.text ?? '')),
+        assessment: { risk: 'safe', approvalRequired: false }
+      }
+    case 'browser_screenshot':
+      return { title: 'Look at the page', assessment: { risk: 'safe', approvalRequired: false } }
+    case 'browser_back':
+      return { title: 'Go back one page', assessment: { risk: 'safe', approvalRequired: false } }
+    case 'browser_scroll':
+      return {
+        title: 'Scroll the page',
+        summary: `${String(args.direction ?? 'down')} × ${String(args.amount ?? 1)}`,
         assessment: { risk: 'safe', approvalRequired: false }
       }
     case 'desktop_screenshot':
@@ -510,7 +606,7 @@ export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   guest: GuestClient,
-  options: { signal?: AbortSignal; workspace?: string }
+  options: { signal?: AbortSignal; workspace?: string; browser?: GuestBrowser }
 ): Promise<ToolResult> {
   try {
     switch (name) {
@@ -551,7 +647,7 @@ export async function executeTool(
       case 'desktop_key':
         return await desktopKeyTool(args, guest)
       case 'launch_app':
-        return await launchAppTool(args, guest)
+        return await launchAppTool(args, guest, options.browser)
       case 'desktop_screenshot':
         return await desktopScreenshotTool(guest)
       case 'desktop_move':
@@ -567,7 +663,21 @@ export async function executeTool(
       case 'web_search':
         return await webSearchTool(args, guest, options.signal)
       case 'open_url':
-        return await openUrlTool(args, guest)
+        return await openUrlTool(args, guest, options.browser)
+      case 'browser_open':
+        return await browserOpenTool(args, requireBrowser(options.browser))
+      case 'browser_read':
+        return await browserReadTool(requireBrowser(options.browser))
+      case 'browser_click':
+        return await browserClickTool(args, requireBrowser(options.browser))
+      case 'browser_type':
+        return await browserTypeTool(args, requireBrowser(options.browser))
+      case 'browser_screenshot':
+        return await browserScreenshotTool(requireBrowser(options.browser))
+      case 'browser_back':
+        return await browserBackTool(requireBrowser(options.browser))
+      case 'browser_scroll':
+        return await browserScrollTool(args, requireBrowser(options.browser))
       default:
         return { output: `Unknown tool: ${name}`, isError: true }
     }
@@ -1021,10 +1131,34 @@ async function webSearchTool(
   }
 }
 
-async function openUrlTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+async function openUrlTool(
+  args: Record<string, unknown>,
+  guest: GuestClient,
+  browser?: GuestBrowser
+): Promise<ToolResult> {
   const url = String(args.url ?? '').trim()
   const problem = validateHttpUrl(url)
   if (problem) return { output: problem, isError: true }
+  if (browser) {
+    try {
+      const page = await browser.open(url)
+      return {
+        output: `Opened ${url} in the TagNest browser on the Linux desktop.\nTitle: ${page.title || '(none)'}\nURL: ${page.url}`,
+        isError: false
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const fallback = await openUrlInFirefox(url, guest)
+      return {
+        output: `The automation browser could not open the page: ${reason}\n\n${fallback.output}\n\nBrowser click/type tools will not work until the automation browser is available.`,
+        isError: fallback.isError
+      }
+    }
+  }
+  return openUrlInFirefox(url, guest)
+}
+
+async function openUrlInFirefox(url: string, guest: GuestClient): Promise<ToolResult> {
   const helper = await guest.exec('test -x /usr/local/bin/tagnest-open && echo ready || echo missing', {
     timeoutMs: 15_000
   })
@@ -1044,6 +1178,133 @@ async function openUrlTool(args: Record<string, unknown>, guest: GuestClient): P
   return {
     output: `Could not open ${url}: ${trimOutput((result.stderr || result.stdout).trim() || 'unknown error')}`,
     isError: true
+  }
+}
+
+function requireBrowser(browser?: GuestBrowser): GuestBrowser {
+  if (!browser) {
+    throw new Error('The TagNest browser controller is unavailable. Start the Linux environment and try again.')
+  }
+  return browser
+}
+
+function formatBrowserPage(page: BrowserPage): string {
+  const elements = page.elements
+    .map(
+      (element) =>
+        `${element.ref}. <${element.tag}${element.type ? ` type=${element.type}` : ''}> ${element.label}${
+          element.href ? ` → ${element.href}` : ''
+        }${element.checked ? ' (checked)' : ''}`
+    )
+    .join('\n')
+  // Put the refs before the page text: a long article can otherwise fill the
+  // output budget and hide the elements the model needs to act on.
+  return trimOutput(
+    [
+      `Title: ${page.title || '(none)'}`,
+      `URL: ${page.url}`,
+      '',
+      `Interactive elements (${page.elements.length}):`,
+      elements || '(none found)',
+      '',
+      'Visible text:',
+      page.text || '(empty)'
+    ].join('\n')
+  )
+}
+
+async function browserOpenTool(args: Record<string, unknown>, browser: GuestBrowser): Promise<ToolResult> {
+  const url = String(args.url ?? '').trim()
+  const problem = validateHttpUrl(url)
+  if (problem) return { output: problem, isError: true }
+  const page = await browser.open(url)
+  return {
+    output: `${formatBrowserPage(page)}\n\nThe page is visible in the Linux panel. Use the refs above with browser_click and browser_type.`,
+    isError: false
+  }
+}
+
+async function browserReadTool(browser: GuestBrowser): Promise<ToolResult> {
+  const page = await browser.read()
+  return { output: formatBrowserPage(page), isError: false }
+}
+
+async function browserClickTool(
+  args: Record<string, unknown>,
+  browser: GuestBrowser
+): Promise<ToolResult> {
+  const ref = args.ref === undefined ? undefined : Math.round(Number(args.ref))
+  const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
+  const text = typeof args.text === 'string' ? args.text.trim() : ''
+  if (ref === undefined && !selector && !text) {
+    return { output: 'Provide a ref from browser_read, a CSS selector, or the visible text to click.', isError: true }
+  }
+  if (ref !== undefined && (!Number.isInteger(ref) || ref <= 0)) {
+    return { output: 'ref must be a positive element number from browser_read.', isError: true }
+  }
+  const result = await browser.click({ ref, selector: selector || undefined, text: text || undefined })
+  return {
+    output: `Clicked <${result.tag}> "${result.label || '(no label)'}".\nNow at: ${result.url || '(unknown URL)'}\nTitle: ${result.title || '(none)'}\nUse browser_read if the page changed and you need the new elements.`,
+    isError: false
+  }
+}
+
+async function browserTypeTool(args: Record<string, unknown>, browser: GuestBrowser): Promise<ToolResult> {
+  const text = String(args.text ?? '')
+  if (!text) return { output: 'text is required', isError: true }
+  if (text.length > 10_000) return { output: 'Refusing to type more than 10000 characters.', isError: true }
+  const ref = args.ref === undefined ? undefined : Math.round(Number(args.ref))
+  if (ref !== undefined && (!Number.isInteger(ref) || ref <= 0)) {
+    return { output: 'ref must be a positive element number from browser_read.', isError: true }
+  }
+  const result = await browser.type({
+    ref,
+    selector: typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined,
+    text,
+    submit: args.submit === true
+  })
+  return {
+    output: `Typed ${text.length} characters into <${result.label || 'focused field'}>.\nField value: ${
+      result.value || '(empty)'
+    }\nPage: ${result.url}${args.submit === true ? '\nPressed Enter to submit.' : ''}`,
+    isError: false
+  }
+}
+
+async function browserScreenshotTool(browser: GuestBrowser): Promise<ToolResult> {
+  const shot = await browser.screenshot()
+  const buffer = Buffer.from(shot.base64, 'base64')
+  if (buffer.length === 0) return { output: 'The browser returned an empty screenshot.', isError: true }
+  if (buffer.length > MAX_SCREENSHOT_BYTES) {
+    return {
+      output: `The browser screenshot is too large to send (${(buffer.length / 1024 / 1024).toFixed(1)} MB).`,
+      isError: true
+    }
+  }
+  return {
+    output: `Screenshot of the page (${shot.width}×${shot.height}, ${Math.round(buffer.length / 1024)} KB PNG). The image is attached.`,
+    isError: false,
+    image: {
+      mimeType: 'image/png',
+      base64: shot.base64,
+      width: shot.width,
+      height: shot.height
+    }
+  }
+}
+
+async function browserBackTool(browser: GuestBrowser): Promise<ToolResult> {
+  const page = await browser.back()
+  return { output: formatBrowserPage(page), isError: false }
+}
+
+async function browserScrollTool(args: Record<string, unknown>, browser: GuestBrowser): Promise<ToolResult> {
+  const direction = String(args.direction ?? 'down').toLowerCase() === 'up' ? 'up' : 'down'
+  const amount = Math.min(10, Math.max(1, Math.round(Number(args.amount) || 1)))
+  const position = await browser.scroll(direction, amount)
+  return {
+    output: `Scrolled ${direction} by ${amount} screen${amount === 1 ? '' : 's'}. Real scroll position: ${position}px.`,
+    isError: false
   }
 }
 
@@ -1202,8 +1463,21 @@ const APP_COMMANDS: Record<string, string> = {
   calculator: 'galculator'
 }
 
-async function launchAppTool(args: Record<string, unknown>, guest: GuestClient): Promise<ToolResult> {
+async function launchAppTool(
+  args: Record<string, unknown>,
+  guest: GuestClient,
+  browser?: GuestBrowser
+): Promise<ToolResult> {
   const app = String(args.app ?? '').toLowerCase()
+  if (app === 'browser' && browser) {
+    try {
+      await browser.open('about:blank')
+      return { output: 'Opened the TagNest browser on the Linux desktop. It is ready for browser_open.', isError: false }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return { output: `Could not open the TagNest browser: ${reason}`, isError: true }
+    }
+  }
   const command = APP_COMMANDS[app]
   if (!command) {
     return {

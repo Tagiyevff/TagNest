@@ -3,6 +3,55 @@
 All notable changes to TagNest are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — 2026-10-29
+
+### Added
+
+- **The agent can drive a real browser.** A dedicated Chromium window runs on the Linux desktop and
+  is reused for the whole task, so "open Firefox" followed by "open YouTube" no longer leaves two
+  windows and the agent can act on the page it just opened. Seven new tools:
+  - `browser_open` — navigate and return the real title, URL, visible text and numbered elements.
+  - `browser_read` — re-read the current page and its elements after a change.
+  - `browser_click` — click by ref, CSS selector or visible text using real CDP mouse events.
+  - `browser_type` — focus a field and insert real keyboard text, optionally press Enter.
+  - `browser_screenshot` — capture the page and hand the PNG to a vision model.
+  - `browser_back` / `browser_scroll` — history and real wheel scrolling.
+  `open_url` now opens the same window, and `launch_app browser` uses it; Firefox remains the
+  fallback when the automation browser cannot start.
+- **QEMU one-click install.** When `qemu-system-x86_64` is missing, the Linux panel offers
+  **Install QEMU** instead of only a manual command. It runs the fixed winget package
+  `SoftwareFreedomConservancy.QEMU`, lets Windows show its own UAC prompt, verifies the binary and
+  then starts Linux automatically. Failures (winget missing, UAC cancelled, timeout, package not
+  found) are reported verbatim in the panel.
+- **Automatic updates in installed builds.** `electron-updater` checks GitHub Releases 10 seconds
+  after launch and every 6 hours, downloads in the background and installs on quit. The chat shows
+  a download/ready strip, and Settings → About has the live status and a **Restart and install**
+  action. Development checkouts report that automatic updates are only active in the installed app.
+- The release workflow now attaches `latest.yml`, which electron-updater needs.
+- 8 unit tests for element-ref parsing, element ranking, URL validation and page-text rewriting;
+  97 tests in total.
+
+### Changed
+
+- Browser output lists interactive elements before free text, so a model reads the controls and the
+  page content in the order it needs them.
+- The system prompt documents the browser workflow (`browser_open` → read → click/type → re-read)
+  and tells the agent to reuse the visible window instead of spawning more browsers.
+- Guest provisioning installs `socat` and Chromium's runtime dependencies; Chromium itself is
+  installed lazily on first browser use.
+
+### Fixed
+
+- Chromium opened the Linux keyring password dialog on first start, which blocked the renderer and
+  made every CDP page command time out. It now starts with `--password-store=basic` and
+  `--use-mock-keychain`.
+- Chromium's DevTools port binds only to guest loopback, while QEMU's host forward reaches the
+  guest's NAT address; a guest-side `socat` bridge connects the two, and the host still exposes the
+  port only on loopback.
+- A stale Chromium profile lock from a killed VM made the next launch hang; the browser now removes
+  its own singleton lock and starts cleanly after an unclean shutdown.
+- Portrait-shaped elements (tall links/buttons) are ranked correctly when building refs.
+
 ## 0.4.0 — 2026-10-28
 
 ### Added

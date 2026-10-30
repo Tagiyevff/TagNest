@@ -18,4 +18,8 @@ export const QEMU_DOWNLOAD_URL = 'https://qemu.weilnetz.de/w64/'
 
 export const GUEST_SSH_PORT = 22
 export const GUEST_VNC_PORT = 5901
+/** Chromium's DevTools port inside the guest (loopback only, Chrome requires that). */
+export const BROWSER_DEBUG_PORT = 9222
+/** Guest-side socat bridge that makes the DevTools port reachable from QEMU NAT. */
+export const BROWSER_PROXY_PORT = 9223
 export const SEED_HOST = '10.0.2.2'

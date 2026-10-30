@@ -2,6 +2,7 @@ import { app, BrowserWindow, session, shell } from 'electron'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { AgentRuntime } from './agent/agent'
+import { AutoUpdateController } from './auto-update'
 import { registerIpc } from './ipc'
 import { LinuxRuntime } from './linux/runtime'
 import { logger } from './logger'
@@ -12,6 +13,7 @@ import { SettingsStore } from './storage/settings'
 let mainWindow: BrowserWindow | null = null
 let runtime: LinuxRuntime | null = null
 let agent: AgentRuntime | null = null
+let updates: AutoUpdateController | null = null
 let quitting = false
 
 app.setName('TagNest')
@@ -49,6 +51,7 @@ app.whenReady().then(async () => {
 
   runtime = new LinuxRuntime(userDataDir, () => settings.get())
   agent = new AgentRuntime(conversations, settings, secrets, runtime)
+  updates = new AutoUpdateController(app.getVersion())
 
   mainWindow = createWindow()
   registerIpc({
@@ -57,8 +60,10 @@ app.whenReady().then(async () => {
     secrets,
     conversations,
     runtime,
-    agent
+    agent,
+    updates
   })
+  updates.start()
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
@@ -197,6 +202,7 @@ app.on('before-quit', (event) => {
   quitting = true
   logger.info('app', 'shutting down')
   agent?.dispose()
+  updates?.dispose()
   runtime
     .dispose()
     .catch((error) => logger.error('app', 'runtime shutdown failed', error))

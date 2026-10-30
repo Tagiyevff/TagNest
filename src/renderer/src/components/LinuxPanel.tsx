@@ -15,6 +15,7 @@ interface LinuxPanelProps {
   onStop: () => void
   onRestart: () => void
   onOpenLogs: () => void
+  onInstallQemu: () => void
 }
 
 const PHASE_KEYS: Record<RuntimePhase, Parameters<Translate>[0]> = {
@@ -520,6 +521,7 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
             onStart={props.onStart}
             onRestart={props.onRestart}
             onOpenLogs={props.onOpenLogs}
+            onInstallQemu={props.onInstallQemu}
           />
         ) : null}
 
@@ -660,17 +662,20 @@ function RuntimeOverlay({
   runtime,
   onStart,
   onRestart,
-  onOpenLogs
+  onOpenLogs,
+  onInstallQemu
 }: {
   t: Translate
   runtime: RuntimeState
   onStart: () => void
   onRestart: () => void
   onOpenLogs: () => void
+  onInstallQemu: () => void
 }): JSX.Element {
   const isError = runtime.phase === 'error'
   const isStopped = runtime.phase === 'stopped'
   const showProgress = typeof runtime.progress === 'number' && runtime.progress > 0
+  const showQemuInstall = !runtime.qemuFound && runtime.qemuCanInstall && (isStopped || isError)
 
   return (
     <div className="runtime-overlay">
@@ -692,9 +697,30 @@ function RuntimeOverlay({
           </div>
         ) : null}
         {isStopped ? <p className="runtime-note">{t('firstRunNote')}</p> : null}
+        {showQemuInstall ? (
+          <div className="qemu-install">
+            <p>{t('qemuInstallHint')}</p>
+            <div className="qemu-install-actions">
+              <button
+                type="button"
+                className="button solid"
+                onClick={onInstallQemu}
+                disabled={runtime.qemuInstalling}
+              >
+                {runtime.qemuInstalling ? t('qemuInstalling') : t('qemuInstall')}
+              </button>
+              {runtime.qemuInstalling ? <span className="mini-spin dark" /> : null}
+            </div>
+            {runtime.qemuInstallMessage ? <p className="runtime-note">{runtime.qemuInstallMessage}</p> : null}
+            <p className="runtime-note">{t('qemuInstallManual')}</p>
+          </div>
+        ) : null}
+        {runtime.qemuFound && runtime.qemuInstallMessage ? (
+          <p className="runtime-note">{runtime.qemuInstallMessage}</p>
+        ) : null}
         <div className="runtime-actions">
           {isStopped ? (
-            <button type="button" className="button solid" onClick={onStart}>
+            <button type="button" className="button solid" onClick={onStart} disabled={runtime.qemuInstalling}>
               {t('start')}
             </button>
           ) : null}
@@ -703,7 +729,7 @@ function RuntimeOverlay({
               <button type="button" className="button ghost" onClick={onOpenLogs}>
                 {t('logs')}
               </button>
-              <button type="button" className="button solid" onClick={onRestart}>
+              <button type="button" className="button solid" onClick={onRestart} disabled={runtime.qemuInstalling}>
                 {t('restart')}
               </button>
             </>

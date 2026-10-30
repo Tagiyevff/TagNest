@@ -3,7 +3,7 @@
 This file records what was actually executed on the development machine, with the observed
 results. It is deliberately specific about what was **not** verified.
 
-- Date: 2026-10-26 → 2026-10-28
+- Date: 2026-10-26 → 2026-10-29
 - Host: Windows (Electron 45, Node 26.1.0, QEMU 11)
 - Guest: Alpine Linux 3.24.3 (kernel 6.18.58-0-virt), XFCE, Xvnc `:1` at 1440×900
 - Acceleration: WHPX (`-machine pc -accel whpx -cpu qemu64`), 2 vCPU, 3072 MB RAM, 20 GB sparse overlay
@@ -13,21 +13,118 @@ results. It is deliberately specific about what was **not** verified.
 ```text
 npm run typecheck   PASS
 npm run lint        PASS (0 problems)
-npm test            PASS (10 files, 89 tests)
+npm test            PASS (11 files, 97 tests)
 npm run build       PASS (electron-vite, main + preload + renderer)
-npm run package:win PASS (0.3.0, NSIS, release/TagNest-0.3.0-x64.exe, 119 MB; 0.4.0 not repackaged yet)
+npm run package:win PASS (0.5.0, NSIS, release/TagNest-0.5.0-x64.exe; see the 0.5.0 section)
 ```
 
-The 89 tests include the new app-project tests (name and port validation, starter file contents,
+The 97 tests include the app-project tests (name and port validation, starter file contents,
 metadata parsing and rejection, HTML escaping), the update-check/version comparison, guest stats
 parser, upload path sanitizer, workspace listing confinement (including a symlink that resolves to
-`/etc`), download success/cancel with a mocked native dialog, and the real provider connection
-check against a mock HTTP endpoint (success, missing key, 401, unreachable local server).
+`/etc`), download success/cancel with a mocked native dialog, the real provider connection check
+against a mock HTTP endpoint (success, missing key, 401, unreachable local server), and the 0.5.0
+browser helpers (ref parsing, element ranking, URL validation, page-text rewriting).
 
 The unit tests cover the provider adapters against local mock HTTP servers (including a 401 mapped to
 a credential error, a body with data appended after the JSON document, a non-JSON body and an empty
 body), secret redaction, storage/settings persistence, path confinement helpers and the web helpers
 (URL validation, HTML→text conversion, search-result parsing).
+
+## 0.5.0 browser automation, QEMU install, auto-updates (2026-10-29)
+
+### Unit tests, typecheck, lint, build
+
+```text
+npm run typecheck   PASS
+npm run lint        PASS (0 problems)
+npm test            PASS (11 files, 97 tests)
+npm run build       PASS
+```
+
+`src/main/linux/browser.test.ts` covers numbered-ref parsing, element ranking (inputs/buttons/links
+before text, tall elements included), URL validation for browser navigation and rewriting an
+extracted page's text into the bounded form the model receives.
+
+### Real Chromium in the real VM
+
+`npx tsx .local/logs/browser-smoke.mts` started the existing workspace with WHPX and drove the
+browser through CDP. The guest installed Chromium on first use; the window is visible on the
+embedded desktop at 1432×753.
+
+```text
+[state] qemu true canInstall true accel whpx
+[browser] title: TagNest Browser Test
+[browser] url: http://127.0.0.1:8099/
+[browser] text: Browser automation works | Your name  Submit |  | nothing yet |  | Second page
+[browser] elements: 1:input:Type here, 2:button:Submit, 3:a:Second page
+[browser] typed:  "TagNest"
+[browser] clicked: button Submit url: http://127.0.0.1:8099/
+[browser] after click: Browser automation works | Your name  Submit |  | You typed: TagNest |  | Second page
+[browser] navigation: http://127.0.0.1:8099/second.html
+[browser] back: http://127.0.0.1:8099/
+[browser] screenshot: 1432 x 753
+[browser] opening real internet page…
+[browser] internet title: Example Domain url: https://example.com/
+BROWSER_SMOKE_OK
+```
+
+The input text, the click result, the second page and the back navigation are real DOM state read
+back from Chromium, not scripted echoes. `https://example.com/` loaded through the guest's own
+internet connection (QEMU user-mode NAT). The screenshot was also saved and inspected: it shows the
+real page inside the desktop, not a placeholder.
+
+`browser_scroll` ran without error, but the test page was shorter than the viewport, so `scrollY`
+stayed 0 and scrolling itself is **not** proven by this run.
+
+### Through the agent's actual tool layer
+
+The same flow was invoked through `executeTool` (the function the agent calls), not through the
+guest API:
+
+```text
+[open] false Title: Tool Test
+[type] false Typed 7 characters into <focused field>.
+[click] false Clicked <button> "Submit".
+[read] false Title: Tool Test
+text: You typed: TagNest
+[nav] false Clicked <a> "Second page".
+[back] false Title: Tool Test
+[screenshot] false Screenshot of the page (1432×753, 16 KB PNG). The image is attached. image? true
+[open_url] false Opened https://example.com/ in the TagNest browser on the Linux desktop.
+TOOL_SMOKE_OK
+```
+
+This is the path the model uses, including the text response format, image attachment to vision
+models and `open_url` sharing the same window. During development the first attempt failed because
+`browser_read` listed page text but no elements; that was a real regression in the extraction step
+and is covered by the unit tests above.
+
+### Root causes fixed during the run
+
+- Chromium's first-start keyring dialog appeared on the desktop and blocked the renderer; every
+  `Runtime.evaluate` timed out. Starting it with `--password-store=basic --use-mock-keychain` fixed
+  it. This was diagnosed from a real desktop screenshot, not guessed.
+- Chromium only listens on guest loopback while QEMU's host forward targets the guest NAT address.
+  A guest `socat` bridge (`0.0.0.0:9223 → 127.0.0.1:9222`) fixed the connection; the host port is
+  still loopback-only and random.
+- A stale profile singleton lock made restarts hang after an unclean VM shutdown; the launch script
+  now clears only its own Chromium lock before starting.
+
+### QEMU one-click install
+
+The runtime reports `qemuFound: true`, `qemuCanInstall: true` on this machine and the Linux panel
+shows the manual path only when winget is unavailable. **The actual winget install was not run**, on
+purpose: QEMU 11 is already installed and used by every other test, and removing it to exercise the
+button would have invalidated the rest of the run. The executable path, fixed package id, UAC
+prompt and post-install verification are implemented and typechecked; cancellation and failure
+messages were reviewed but not triggered.
+
+### Automatic updates
+
+The packaged 0.5.0 build includes `electron-updater` and `latest.yml`; the development checkout
+reports `disabled` with the message that updates are active in the installed build. No second
+release existed while building 0.5.0, so an actual download-and-install of a newer version could
+not be executed. The update feed itself is published by the release workflow.
 
 ## 0.4.0 automatic model discovery and OpenRouter Free (2026-10-28)
 
@@ -578,9 +675,13 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
   in the running app; the three OS-level interactions listed above were not clicked by a human.
 - **Clipboard transfer and dynamic guest resolution.** Both are implemented (clipboard buttons,
   noVNC viewport scaling) but were not exercised in this test run.
-- **DOM automation.** The agent sees the desktop through screenshots and acts with the real mouse
-  and keyboard; it does not read the page's DOM or page source, and vision requires a model that
-  accepts images.
+- **Browser edge cases.** The CDP browser was tested on local HTTP pages and `example.com`.
+  File pickers, cross-origin iframes, `chrome://` pages, PDFs, pages that block automation and very  heavy SPAs were not exercised; a page rendered only into a canvas is invisible to text
+  extraction. `browser_scroll` is implemented but was not proven (see above).
+- **Automatic update installation.** No newer release existed during the 0.5.0 build, so an update  download, signature check and install-on-quit were not observed end to end. The updater is
+  disabled in development by design.
+- **QEMU installation through winget.** Not executed because QEMU was already installed; see the
+  0.5.0 section.
 - **macOS and Linux hosts.** Only Windows was tested.
 - **Security auditing.** Isolation was checked behaviourally (no host mounts, NAT-only). No pen-test
   or QEMU-escape analysis was performed.

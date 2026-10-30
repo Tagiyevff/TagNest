@@ -116,7 +116,7 @@ apk add --no-cache \\
   tigervnc \\
   xfce4 xfce4-terminal xfce4-screenshooter thunar mousepad ristretto \\
   adwaita-icon-theme font-dejavu font-noto \\
-  firefox
+  firefox socat
 rc-update add dbus default || true
 rc-service dbus start || true
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type JSX } from 'react'
 import type {
+  AutoUpdateState,
   Language,
   ModelCatalog,
   ModelMode,
@@ -58,6 +59,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<ProviderTestResult | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [autoUpdate, setAutoUpdate] = useState<AutoUpdateState | null>(null)
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState('')
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
@@ -235,6 +237,35 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       setCheckingUpdate(false)
     }
   }
+
+  const checkAutoUpdate = async (): Promise<void> => {
+    setCheckingUpdate(true)
+    setUpdateError('')
+    try {
+      setAutoUpdate(await window.tagnest.updates.check())
+    } catch (caught) {
+      setUpdateError(cleanError(caught))
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  useEffect(() => {
+    const api = window.tagnest
+    if (!api) return
+    let active = true
+    void api.updates
+      .state()
+      .then((state) => {
+        if (active) setAutoUpdate(state)
+      })
+      .catch(() => undefined)
+    const off = api.onUpdateState(setAutoUpdate)
+    return () => {
+      active = false
+      off()
+    }
+  }, [])
 
   const catalogModels = catalog?.models ?? []
   const currentInCatalog = catalogModels.some((entry) => entry.id === model)
@@ -543,6 +574,38 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               </div>
             ) : null}
             {updateError ? <p className="settings-error">{updateError}</p> : null}
+            {autoUpdate ? (
+              <div className="auto-update">
+                <div className="about-row">
+                  <span className="field-label">{t('autoUpdates')}</span>
+                  {autoUpdate.status !== 'disabled' ? (
+                    <button
+                      type="button"
+                      className="button ghost"
+                      disabled={checkingUpdate || autoUpdate.status === 'downloading'}
+                      onClick={() => void checkAutoUpdate()}
+                    >
+                      {autoUpdate.status === 'checking' ? t('checkingUpdates') : t('checkUpdates')}
+                    </button>
+                  ) : null}
+                </div>
+                <p className={`field-note ${autoUpdate.status === 'error' ? 'settings-error' : ''}`}>
+                  {autoUpdate.message ?? ''}
+                </p>
+                {autoUpdate.status === 'ready' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="button solid"
+                      onClick={() => void window.tagnest.updates.install()}
+                    >
+                      {t('restartAndInstall')}
+                    </button>
+                    <p className="field-note">{t('updateInstalledOnQuit')}</p>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
           </section>
 
           <section className="settings-section compact">

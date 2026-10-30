@@ -161,11 +161,33 @@ const server = createServer((request, response) => {
               content: '',
               tool_calls: [
                 {
-                  id: 'call_open',
+                  id: 'call_browser_open',
                   type: 'function',
                   function: {
-                    name: 'open_url',
+                    name: 'browser_open',
                     arguments: JSON.stringify({ url: 'https://example.com/' })
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    } else if (toolMessages.length === 6) {
+      // Read the page the browser just opened; the refs and text must be real.
+      payload = {
+        choices: [
+          {
+            finish_reason: 'tool_calls',
+            message: {
+              content: '',
+              tool_calls: [
+                {
+                  id: 'call_browser_read',
+                  type: 'function',
+                  function: {
+                    name: 'browser_read',
+                    arguments: JSON.stringify({})
                   }
                 }
               ]
@@ -226,7 +248,7 @@ async function main(): Promise<void> {
 
   console.log('[agent] sending the task')
   const { conversationId } = await agent.send({
-    text: 'Create a file, read it back, try to delete it, then fetch a page, search the web and open it in the browser.'
+    text: 'Create a file, read it back, try to delete it, then fetch a page, search the web, open it in the browser and read the open page.'
   })
 
   const deadline = Date.now() + 120_000
@@ -248,15 +270,25 @@ async function main(): Promise<void> {
   const toolCalls = conversation?.messages.flatMap((message) => message.toolCalls) ?? []
   const fetchOutput = toolCalls.find((call) => call.name === 'web_fetch')?.output ?? ''
   const searchOutput = toolCalls.find((call) => call.name === 'web_search')?.output ?? ''
+  const browserOpenOutput = toolCalls.find((call) => call.name === 'browser_open')?.output ?? ''
+  const browserReadOutput = toolCalls.find((call) => call.name === 'browser_read')?.output ?? ''
   // The real page must come back over HTTP with readable text, not a stub.
   const fetchedPage = /HTTP 200/.test(fetchOutput) && fetchOutput.length > 200
   const searchResults = /https:\/\/alpinelinux\.org/.test(searchOutput)
+  // The browser must report the real page and its real interactive elements.
+  const browserPage =
+    /Title: Example Domain/.test(browserOpenOutput) &&
+    /https:\/\/example\.com\//.test(browserOpenOutput) &&
+    /Interactive elements \(\d+\):/.test(browserOpenOutput)
+  const browserReread = /Title: Example Domain/.test(browserReadOutput)
   const browserRunning = await runtime.exec(
-    "pgrep -u tagnest -x firefox >/dev/null 2>&1 && echo running || echo absent"
+    "pgrep -u tagnest -x chromium >/dev/null 2>&1 && echo running || echo absent"
   )
   console.log(`[verify] web_fetch saw the real page: ${fetchedPage}`)
   console.log(`[verify] web_search returned real results: ${searchResults}`)
-  console.log(`[verify] firefox process in the guest: ${browserRunning.stdout.trim()}`)
+  console.log(`[verify] browser_open saw the real page: ${browserPage}`)
+  console.log(`[verify] browser_read re-read it: ${browserReread}`)
+  console.log(`[verify] chromium process in the guest: ${browserRunning.stdout.trim()}`)
 
   const ok =
     agent.getTask().status === 'done' &&
@@ -265,10 +297,13 @@ async function main(): Promise<void> {
     states.some((state) => state === 'run_command:denied') &&
     states.some((state) => state === 'web_fetch:ok') &&
     states.some((state) => state === 'web_search:ok') &&
-    states.some((state) => state === 'open_url:ok') &&
+    states.some((state) => state === 'browser_open:ok') &&
+    states.some((state) => state === 'browser_read:ok') &&
     file.stdout.includes('present') &&
     fetchedPage &&
     searchResults &&
+    browserPage &&
+    browserReread &&
     browserRunning.stdout.includes('running') &&
     Boolean(assistant?.content.includes('Finished'))
 

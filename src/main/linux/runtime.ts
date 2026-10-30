@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { AppSettings, GuestStats, RuntimeState } from '../../shared/types'
 import { logger } from '../logger'
 import { readJsonFile, writeJsonFileAtomic } from '../storage/json'
-import { GUEST_VNC_PORT, QEMU_DOWNLOAD_URL } from './config'
+import { BROWSER_PROXY_PORT, GUEST_VNC_PORT, QEMU_DOWNLOAD_URL } from './config'
 import {
   BROWSER_INSTALL_COMMAND,
   DESKTOP_HEIGHT,
@@ -12,6 +12,8 @@ import {
   PROVISION_MARKER,
   guestHelperInstallCommand
 } from './guest'
+import { GuestBrowser } from './browser'
+import { canAutoInstallQemu, installQemu } from './qemu-install'
 import { detectAcceleration, findQemuBinary } from './qemu'
 import { LinuxProvisioner, linuxPaths } from './provision'
 import { GuestClient, type ExecOptions, type ExecResult } from './ssh'
@@ -45,6 +47,8 @@ export class LinuxRuntime {
   private readonly guest: GuestClient
   private readonly provisioner: LinuxProvisioner
   private bridge: VncBridge | null = null
+  private browser: GuestBrowser | null = null
+  private browserHostPort: number | null = null
   private seed: { port: number; close: () => Promise<void> } | null = null
   private listeners = new Set<StateListener>()
   private starting: Promise<void> | null = null
@@ -67,7 +71,10 @@ export class LinuxRuntime {
       acceleration: 'unknown',
       memoryMB: getSettings().memoryMB,
       cpus: getSettings().cpus,
-      logPath: paths.serialLog
+      logPath: paths.serialLog,
+      qemuFound: Boolean(findQemuBinary()),
+      qemuCanInstall: canAutoInstallQemu(),
+      qemuInstalling: false
     }
   }
 
@@ -85,6 +92,45 @@ export class LinuxRuntime {
       throw new Error('The TagNest Linux environment is not running. Start it from the Linux panel.')
     }
     return this.guest
+  }
+
+  /** Loopback port QEMU forwards to Chromium's DevTools port in the guest. */
+  getBrowserHostPort(): number | null {
+    return this.browserHostPort
+  }
+
+  /** Shared controller for the agent's visible Chromium automation browser. */
+  getBrowser(): GuestBrowser {
+    if (!this.browser) this.browser = new GuestBrowser(this.guest, () => this.browserHostPort)
+    return this.browser
+  }
+
+  /**
+   * Installs QEMU through winget. Windows shows the UAC prompt; the app only
+   * starts the fixed, validated installer command after the user clicks the
+   * button in the Linux panel.
+   */
+  async installQemu(): Promise<RuntimeState> {
+    if (this.state.qemuInstalling) return this.getState()
+    this.setState({ qemuInstalling: true, qemuInstallMessage: 'Preparing the installer…' })
+    try {
+      const result = await installQemu((message) => this.setState({ qemuInstallMessage: message }))
+      const installed = Boolean(findQemuBinary())
+      this.setState({
+        qemuFound: installed,
+        qemuInstalling: false,
+        qemuInstallMessage: result.message,
+        qemuCanInstall: canAutoInstallQemu()
+      })
+      // Installing from the "Linux is not running" overlay is a request to get
+      // Linux working, so continue straight into the normal start sequence.
+      if (installed && this.state.phase !== 'running') await this.start()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error('runtime', 'QEMU installation failed', error)
+      this.setState({ qemuInstalling: false, qemuInstallMessage: message })
+    }
+    return this.getState()
   }
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
@@ -144,6 +190,9 @@ export class LinuxRuntime {
     } finally {
       await this.waitForQemuExit(15000)
       this.killQemu()
+      await this.browser?.dispose().catch(() => undefined)
+      this.browser = null
+      this.browserHostPort = null
       await this.guest.disconnect().catch(() => undefined)
       await this.bridge?.close().catch(() => undefined)
       this.bridge = null
@@ -176,6 +225,11 @@ export class LinuxRuntime {
   private async doStart(): Promise<void> {
     const settings = this.getSettings()
     const qemuBinary = findQemuBinary()
+    this.setState({
+      qemuFound: Boolean(qemuBinary),
+      qemuCanInstall: canAutoInstallQemu(),
+      qemuInstalling: false
+    })
     if (!qemuBinary) {
       this.fail(
         'QEMU was not found on this computer.',
@@ -233,6 +287,9 @@ export class LinuxRuntime {
       const sshPort = await getFreeLoopbackPort()
       this.sshHostPort = sshPort
       const vncPort = await getFreeLoopbackPort()
+      const browserPort = await getFreeLoopbackPort()
+      this.browserHostPort = browserPort
+      logger.info('runtime', `browser control will be forwarded on 127.0.0.1:${browserPort}`)
       this.bridge = new VncBridge()
       const bridge = await this.bridge.start(vncPort)
       this.seed = await this.provisioner.startSeedServer(publicKey, instanceId, (step) => {
@@ -262,7 +319,7 @@ export class LinuxRuntime {
         '-drive',
         `file=${this.provisioner.paths.disk},if=virtio,format=qcow2`,
         '-netdev',
-        `user,id=net0,hostfwd=tcp:127.0.0.1:${sshPort}-:22,hostfwd=tcp:127.0.0.1:${vncPort}-:${GUEST_VNC_PORT}`,
+        `user,id=net0,hostfwd=tcp:127.0.0.1:${sshPort}-:22,hostfwd=tcp:127.0.0.1:${vncPort}-:${GUEST_VNC_PORT},hostfwd=tcp:127.0.0.1:${browserPort}-:${BROWSER_PROXY_PORT}`,
         '-device',
         'virtio-net-pci,netdev=net0',
         '-smbios',
@@ -621,8 +678,10 @@ export class LinuxRuntime {
       error: { message, hint, detail },
       vncUrl: undefined,
       progress: undefined,
-      startedAt: undefined
+      startedAt: undefined,
+      qemuInstalling: false
     })
+    this.browserHostPort = null
   }
 
   private async cleanupAfterFailure(): Promise<void> {

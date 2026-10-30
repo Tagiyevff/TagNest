@@ -70,6 +70,46 @@ and the host-side WebSocket bridge requires a random 48-hex-character token gene
 runtime session. Other local processes cannot attach without the token, and the renderer is the only
 client. Clipboard transfer is explicit (paste/copy buttons) and limited to text.
 
+## Browser automation
+
+`linux/browser.ts` starts Chromium inside the guest with `--remote-debugging-port` and talks CDP over
+an SSH tunnel to the host. Nothing listens on the LAN:
+
+- Chromium binds DevTools to guest loopback only. A guest-side `socat` bridge accepts connections on
+  the guest's NAT address, which QEMU forwards to a random **host loopback** port. No other machine
+  can reach either end.
+- The page is untrusted input. `browser_read` extracts text and element metadata; the model does not
+  get to execute arbitrary JavaScript in the guest browser, and only fixed CDP commands
+  (navigate, mouse, key, screenshot, scroll) are issued from main.
+- Chromium runs with `--no-sandbox` inside the VM. That is a deliberate trade: the browser is already
+  inside a QEMU VM, and Alpine's Chromium needs the flag in this rootless, container-less setup. It
+  does **not** relax the host boundary; the guest remains the boundary. The browser also uses
+  `--password-store=basic --use-mock-keychain` so no keyring dialog can block the desktop.
+- Page content can contain prompt injection. Text read from a page is passed to the model as tool
+  output; the approval policy still applies to every command the model then requests, and the
+  browser tools cannot write host files.
+
+## QEMU installation
+
+The **Install QEMU** button runs one fixed command, never model or renderer input:
+
+```text
+powershell -Command Start-Process winget.exe -ArgumentList 'install --id SoftwareFreedomConservancy.QEMU -e …' -Verb RunAs -Wait
+```
+
+Windows displays the UAC prompt; TagNest does not bypass it, does not run an elevated helper of its
+own, and verifies `qemu-system-x86_64` after winget returns. Cancelling UAC or a winget failure is
+reported in the panel and nothing is installed. The app only offers this on Windows when `winget` is
+available.
+
+## Automatic updates
+
+`electron-updater` is enabled only in a packaged Windows build. It reads the public GitHub Release
+feed for this repository and verifies the downloaded package's checksum (`latest.yml`), but the
+installer is **not code-signed** — Authenticode verification is therefore not a protection you
+should rely on. If you need that guarantee, use a signed fork or install releases manually. The
+updater sends no telemetry and no credentials; it is an ordinary HTTPS request to GitHub.
+
 ## Credentials and logs
 
 - Provider keys are encrypted with Electron `safeStorage` — DPAPI on Windows — and stored in
@@ -100,6 +140,8 @@ runs goes through the policy/approval path.
 - Run `qemu-system-x86_64` and `qemu-img` from a fixed set of locations, never from model input.
 - Open loopback TCP ports for SSH/VNC forwards and a loopback WebSocket server.
 - Read and write files under the app data directory and open log folders on request.
+- Offer the fixed winget QEMU install described above, only after the user clicks the button.
+- Contact GitHub Releases for update checks in packaged builds.
 - Generate an SSH keypair for the guest (private key in the app data directory, mode 600; Windows
   ACLs are applied by libuv and are best-effort).
 - Start/stop the QEMU process and its loopback forwards; all model-driven execution stays inside the

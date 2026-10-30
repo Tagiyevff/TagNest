@@ -10,7 +10,8 @@ every `v*` tag:
 
 1. `npm ci`, `npm run typecheck`, `npm run lint`, `npm test` — a release never goes out on a red
    build.
-2. `npm run package:win` → `release/TagNest-<version>-x64.exe` (plus its `.blockmap`).
+2. `npm run package:win` → `release/TagNest-<version>-x64.exe` (plus its `.blockmap` and
+   `latest.yml`).
 3. Uploads the files as a workflow artifact and, for tags, creates a GitHub Release with generated
    notes and the installer attached.
 
@@ -57,7 +58,7 @@ The installer contains the main/preload/renderer bundles, `resources/` and `buil
 
 | Component | How it gets to the user |
 |---|---|
-| QEMU | The user installs it (`winget install SoftwareFreedomConservancy.QEMU`) or bundles it themselves. Not redistributed here — see [LICENSING.md](LICENSING.md). |
+| QEMU | The app offers a one-click install (`winget install SoftwareFreedomConservancy.QEMU` with the normal UAC prompt), or the user installs it themselves. Not redistributed here — see [LICENSING.md](LICENSING.md). |
 | Alpine base image | Downloaded from the pinned `dl.alpinelinux.org` URL on first launch and verified against a SHA-512 digest. |
 | XFCE, TigerVNC, Firefox | Installed inside the guest on first boot with `apk`. |
 | User data | Always outside the install directory, in `%APPDATA%\TagNest`. |
@@ -71,6 +72,21 @@ npm run package:win
 
 That makes the installer roughly 150 MB larger and means you are redistributing the Alpine image —
 read the "Distribution checklist" in [LICENSING.md](LICENSING.md) first.
+
+## Automatic updates
+
+`electron-updater` reads `latest.yml`, the installer and its `.blockmap` from the **latest published
+GitHub Release**. The workflow attaches all three, so no separate update server exists. Two rules
+matter for releases:
+
+- Never publish a release without `latest.yml`; installed apps would report an error instead of
+  updating.
+- The feed uses the public GitHub API and the release must not be a prerelease if it should be
+  offered. Tag pushes are normal releases.
+
+The downloaded update is checksum-verified from `latest.yml`, but the installer is unsigned, so
+Authenticode verification is not a guarantee. Code signing also removes the SmartScreen warning
+when the downloaded installer runs.
 
 ## Code signing
 

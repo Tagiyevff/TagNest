@@ -25,6 +25,7 @@ export const IPC = {
   runtimeRestart: 'runtime:restart',
   runtimeLogs: 'runtime:logs',
   runtimeStats: 'runtime:stats',
+  runtimeInstallQemu: 'runtime:install-qemu',
   workspaceList: 'workspace:list',
   workspaceUpload: 'workspace:upload',
   workspaceDownload: 'workspace:download',
@@ -32,7 +33,11 @@ export const IPC = {
   providerModels: 'provider:models',
   appCheckUpdates: 'app:check-updates',
   appOpenLogs: 'app:open-logs',
+  appUpdateState: 'app:update-state',
+  appUpdateCheck: 'app:update-check',
+  appUpdateInstall: 'app:update-install',
   eventRuntime: 'event:runtime',
   eventAgent: 'event:agent',
-  eventSettings: 'event:settings'
+  eventSettings: 'event:settings',
+  eventUpdate: 'event:update'
 } as const

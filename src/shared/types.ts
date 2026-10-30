@@ -144,6 +144,12 @@ export interface RuntimeState {
   logPath?: string
   memoryMB: number
   cpus: number
+  /** Whether the QEMU emulator was found on this computer. */
+  qemuFound: boolean
+  /** True when the app can install QEMU itself (Windows + winget). */
+  qemuCanInstall: boolean
+  qemuInstalling: boolean
+  qemuInstallMessage?: string
 }
 
 export type ToolCallState = 'running' | 'awaiting-approval' | 'ok' | 'error' | 'denied' | 'cancelled'
@@ -343,6 +349,25 @@ export interface UpdateInfo {
   name?: string
   notes?: string
   publishedAt?: string
+  message?: string
+}
+
+export type AutoUpdateStatus =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'error'
+
+/** State of the in-app update downloader (electron-updater). */
+export interface AutoUpdateState {
+  status: AutoUpdateStatus
+  current: string
+  version?: string
+  percent?: number
   message?: string
 }
 

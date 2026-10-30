@@ -7,6 +7,12 @@ import type { Acceleration } from '../../shared/types'
 let cachedQemu: string | null = null
 let cachedQemuImg: string | null = null
 
+/** Clears the discovery cache after QEMU has been installed at runtime. */
+export function resetQemuCache(): void {
+  cachedQemu = null
+  cachedQemuImg = null
+}
+
 function bundledDirs(): string[] {
   const dirs: string[] = []
   if (process.env.TAGNEST_QEMU_DIR) dirs.push(process.env.TAGNEST_QEMU_DIR)

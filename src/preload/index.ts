@@ -33,7 +33,8 @@ const api: TagNestApi = {
     restart: () => ipcRenderer.invoke(IPC.runtimeRestart),
     logs: () => ipcRenderer.invoke(IPC.runtimeLogs),
     openLogFolder: () => ipcRenderer.invoke(IPC.appOpenLogs),
-    stats: () => ipcRenderer.invoke(IPC.runtimeStats)
+    stats: () => ipcRenderer.invoke(IPC.runtimeStats),
+    installQemu: () => ipcRenderer.invoke(IPC.runtimeInstallQemu)
   },
   files: {
     list: (path) => ipcRenderer.invoke(IPC.workspaceList, { path }),
@@ -47,9 +48,15 @@ const api: TagNestApi = {
   app: {
     checkUpdates: () => ipcRenderer.invoke(IPC.appCheckUpdates)
   },
+  updates: {
+    state: () => ipcRenderer.invoke(IPC.appUpdateState),
+    check: () => ipcRenderer.invoke(IPC.appUpdateCheck),
+    install: () => ipcRenderer.invoke(IPC.appUpdateInstall)
+  },
   onRuntimeState: (listener) => subscribe(IPC.eventRuntime, listener),
   onAgentEvent: (listener) => subscribe(IPC.eventAgent, listener),
-  onSettings: (listener) => subscribe(IPC.eventSettings, listener)
+  onSettings: (listener) => subscribe(IPC.eventSettings, listener),
+  onUpdateState: (listener) => subscribe(IPC.eventUpdate, listener)
 }
 
 contextBridge.exposeInMainWorld('tagnest', api)

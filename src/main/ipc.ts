@@ -15,6 +15,7 @@ import {
 } from '../shared/ipc'
 import type { AgentEvent, AppSnapshot } from '../shared/types'
 import type { AgentRuntime } from './agent/agent'
+import type { AutoUpdateController } from './auto-update'
 import type { LinuxRuntime } from './linux/runtime'
 import type { ConversationStore } from './storage/conversations'
 import type { SecretsStore } from './storage/secrets'
@@ -38,10 +39,11 @@ export interface IpcDependencies {
   conversations: ConversationStore
   runtime: LinuxRuntime
   agent: AgentRuntime
+  updates: AutoUpdateController
 }
 
 export function registerIpc(deps: IpcDependencies): void {
-  const { settings, secrets, conversations, runtime, agent, window } = deps
+  const { settings, secrets, conversations, runtime, agent, updates, window } = deps
 
   const send = (channel: string, payload: unknown): void => {
     if (!window.isDestroyed()) window.webContents.send(channel, payload)
@@ -57,6 +59,7 @@ export function registerIpc(deps: IpcDependencies): void {
   })
 
   runtime.onState((state) => send(IPC.eventRuntime, state))
+  updates.onState((state) => send(IPC.eventUpdate, state))
   const emitAgent = (event: AgentEvent): void => {
     send(IPC.eventAgent, event)
     if (event.type === 'conversation') {
@@ -160,6 +163,8 @@ export function registerIpc(deps: IpcDependencies): void {
 
   ipcMain.handle(IPC.runtimeStats, async () => runtime.getStats())
 
+  ipcMain.handle(IPC.runtimeInstallQemu, async () => runtime.installQemu())
+
   ipcMain.handle(IPC.workspaceList, async (_event, raw: unknown) => {
     const { path } = workspaceListSchema.parse(raw ?? {})
     return listWorkspace(runtime.getGuest(), path)
@@ -184,6 +189,15 @@ export function registerIpc(deps: IpcDependencies): void {
   ipcMain.handle(IPC.providerModels, async () => listConfiguredProviderModels(settings, secrets))
 
   ipcMain.handle(IPC.appCheckUpdates, async () => checkForUpdates(app.getVersion()))
+
+  ipcMain.handle(IPC.appUpdateState, () => updates.getState())
+
+  ipcMain.handle(IPC.appUpdateCheck, async () => updates.check())
+
+  ipcMain.handle(IPC.appUpdateInstall, async () => {
+    updates.install()
+    return { ok: true } as const
+  })
 
   ipcMain.handle(IPC.appOpenLogs, async () => {
     const result = await shell.openPath(runtime.getLogsDirectory())

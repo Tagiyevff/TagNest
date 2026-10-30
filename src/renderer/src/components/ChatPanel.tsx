@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import type {
   ApprovalRequest,
+  AutoUpdateState,
   Conversation,
   ConversationSummary,
   RuntimePhase,
@@ -32,6 +33,8 @@ interface ChatPanelProps {
   onStop: () => void
   onRetry: () => void
   onApprove: (approved: boolean) => void
+  update: AutoUpdateState | null
+  onInstallUpdate: () => void
 }
 
 const BUSY_STATES = new Set(['planning', 'running', 'waiting-approval', 'cancelling'])
@@ -188,6 +191,22 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
       </div>
 
       {approval ? <ApprovalCard request={approval} t={t} onDecide={props.onApprove} /> : null}
+
+      {props.update && (props.update.status === 'ready' || props.update.status === 'downloading') ? (
+        <div className={`update-strip ${props.update.status}`}>
+          <Icon name="download" size={13} />
+          <span>
+            {props.update.status === 'ready'
+              ? t('updateReady', { version: props.update.version ?? '' })
+              : t('updateDownloading', { percent: props.update.percent ?? 0 })}
+          </span>
+          {props.update.status === 'ready' ? (
+            <button type="button" className="link-button" onClick={props.onInstallUpdate}>
+              {t('restartAndInstall')}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <Composer
         t={t}

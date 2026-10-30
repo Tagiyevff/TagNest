@@ -59,6 +59,9 @@ jobs:
           mkdir -p artifacts
           cp -v release/*.exe artifacts/ 2>/dev/null || echo "no .exe found"
           cp -v release/*.blockmap artifacts/ 2>/dev/null || true
+          # electron-updater reads latest.yml from the release, so in-app
+          # automatic updates work without a separate update server.
+          cp -v release/latest.yml artifacts/ 2>/dev/null || echo "no latest.yml found"
           ls -lh artifacts
 
       - name: Upload workflow artifact
@@ -78,16 +81,13 @@ jobs:
           body: |
             TagNest ${{ github.ref_name }} — Windows installer (x64).
 
-            **Before you install:** TagNest needs QEMU on the host.
+            1. Run `TagNest-*.exe` (unsigned, so SmartScreen will warn).
+            2. Open Settings and add a model provider key (or point it at a local
+               Ollama server).
+            3. If QEMU is not installed, the Linux panel offers **Install QEMU**:
+               one click runs `winget install SoftwareFreedomConservancy.QEMU` and
+               Windows asks for the normal UAC approval.
 
-            ```powershell
-            winget install SoftwareFreedomConservancy.QEMU
-            ```
-
-            Then run `TagNest-*.exe`, open Settings and add a model provider key
-            (or point it at a local Ollama server). The first launch downloads the
-            Alpine base image and provisioned desktop — expect a few minutes and
-            about 250 MB of downloads; later launches boot straight to the desktop.
-
-            The installer is unsigned, so Windows SmartScreen will warn. See the
-            README for what works and the known limitations.
+The first launch downloads the Alpine base image and provisions the desktop —
+expect a few minutes and about 250 MB of downloads; later launches boot straight
+to the desktop. See the README for what works and the known limitations.

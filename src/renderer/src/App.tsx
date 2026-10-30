@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'rea
 import type {
   AgentEvent,
   ApprovalRequest,
+  AutoUpdateState,
   Conversation,
   ConversationSummary,
   RuntimeState,
@@ -34,6 +35,7 @@ export default function App(): JSX.Element {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [pointer, setPointer] = useState<{ x: number; y: number; at: number } | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
+  const [update, setUpdate] = useState<AutoUpdateState | null>(null)
   const activeIdRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
@@ -146,6 +148,16 @@ export default function App(): JSX.Element {
       offSettings()
     }
   }, [handleAgentEvent])
+
+  useEffect(() => {
+    const api = window.tagnest
+    if (!api) return
+    void api.updates
+      .state()
+      .then(setUpdate)
+      .catch(() => undefined)
+    return api.onUpdateState(setUpdate)
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -286,6 +298,15 @@ export default function App(): JSX.Element {
     })
   }, [showToast])
 
+  const installQemu = useCallback((): void => {
+    void window.tagnest.runtime
+      .installQemu()
+      .then((next) => setRuntime(next))
+      .catch((error: unknown) => {
+        showToast('error', error instanceof Error ? cleanIpcError(error.message) : String(error))
+      })
+  }, [showToast])
+
   if (!window.tagnest) {
     return (
       <div className="app-fatal">
@@ -335,6 +356,8 @@ export default function App(): JSX.Element {
           if (conversation) void window.tagnest.agent.retry(conversation.id)
         }}
         onApprove={(approved) => void approve(approved)}
+        update={update}
+        onInstallUpdate={() => void window.tagnest.updates.install()}
       />
       <LinuxPanel
         t={t}
@@ -345,6 +368,7 @@ export default function App(): JSX.Element {
         onStop={stopRuntime}
         onRestart={restartRuntime}
         onOpenLogs={() => void window.tagnest.runtime.openLogFolder()}
+        onInstallQemu={installQemu}
       />
       {settingsOpen ? (
         <SettingsDialog

@@ -2269,6 +2269,79 @@ a:focus-visible {
   color: var(--danger);
 }
 
+.update-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 2px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(52, 105, 73, 0.24);
+  border-radius: 12px;
+  background: #dfeae2;
+  color: #24402e;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.update-strip span {
+  flex: 1;
+}
+
+.update-strip.downloading {
+  border-color: var(--line);
+  background: #e4e9ed;
+  color: var(--ink-2);
+}
+
+.update-strip .link-button {
+  white-space: nowrap;
+  color: #24402e;
+  font-weight: 600;
+}
+
+.qemu-install {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #eef2f4;
+}
+
+.qemu-install p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.qemu-install-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auto-update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.auto-update .field-label {
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.auto-update .button {
+  align-self: flex-start;
+}
+
 .about-row {
   display: flex;
   align-items: center;

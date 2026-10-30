@@ -433,7 +433,10 @@ export class AgentRuntime {
 
     let result: ToolResult
     try {
-      result = await executeTool(call.name, call.arguments, this.runtime.getGuest(), { signal })
+      result = await executeTool(call.name, call.arguments, this.runtime.getGuest(), {
+        signal,
+        browser: this.runtime.getBrowser()
+      })
     } catch (error) {
       result = { output: error instanceof Error ? error.message : String(error), isError: true }
     }

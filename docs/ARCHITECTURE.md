@@ -18,9 +18,11 @@ src/
       provision.ts   image download/verify, qcow2 overlay, SSH keys, cloud-init seed server
       guest.ts       first-boot provisioning script (cloud-init user-data)
       qemu.ts        binary discovery, WHPX probe, acceleration fallback
+      qemu-install.ts fixed winget install with the Windows UAC prompt
       runtime.ts     lifecycle state machine, boot/provision/ready detection
       ssh.ts         SSH exec + SFTP wrapper, cancellation, output limits
       vnc.ts         token-authenticated WebSocket→TCP RFB bridge
+      browser.ts     Chromium lifecycle, CDP client, page text and element refs
     agent/
       agent.ts       task loop, tool execution, approvals, cancellation, persistence
       tools.ts       tool schemas + real guest implementations
@@ -30,6 +32,7 @@ src/
       provider-test.ts  one real request to the configured provider
       providers/     OpenAI-compatible, Anthropic, Gemini adapters
     updates.ts       GitHub Releases check + semver comparison
+    auto-update.ts   electron-updater controller (packaged Windows builds)
     apps/
       projects.ts    Linux app projects: templates, metadata, test, run and stop
     workspace/
@@ -108,6 +111,41 @@ that already exists gets `-1`, `-2`, … instead of being overwritten. Host fold
 The Linux panel's file drawer calls `workspace:list` and shows directories first. The header's live
 memory/disk/load readings come from `runtime:stats`, which runs `free`, `df` and reads
 `/proc/loadavg` inside the guest and caches the parsed result for four seconds in `LinuxRuntime`.
+
+## Browser automation
+
+One Chromium window, owned by the main process, is shared by every browser tool and by the agent's
+`open_url` / `launch_app browser`. Keeping one window is what makes “open YouTube, then click the
+first video” work on the page the agent just opened instead of a new tab in a second window.
+
+- **Startup:** if `chromium` is missing, `apk add --no-cache chromium` runs once (the guest has the
+  community repository configured). The browser starts with a dedicated profile, real X11 output on
+  the embedded desktop and `--remote-debugging-port=9222`.
+- **Reachability:** Chromium refuses to bind DevTools to anything but loopback. Alpine's `socat`
+  listens on `0.0.0.0:9223` in the guest and forwards to `127.0.0.1:9222`; QEMU forwards guest 9223
+  to a random host loopback port, which is what the CDP client dials. The VNC-style LAN exposure does
+  not happen: QEMU forwards bind to loopback only.
+- **Protocol:** a minimal CDP client (WebSocket + request ids + timeouts) navigates, evaluates
+  extraction scripts, dispatches real `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`, inserts
+  text, captures screenshots and scrolls. `Page.navigate` is not used for navigation: the client
+  sets `location.href` through `Runtime.evaluate`, which works on Chrome's attached page target and
+  avoids a second navigation path. A settle delay makes an input's page update observable before
+  the next read.
+- **Refs:** `browser_read` returns numbered elements (`1:button:Submit`). Each element carries a
+  stable `data-tagnest-ref` attribute while a page session lasts; clicks re-resolve the element from
+  the DOM by ref, so a stale coordinate cannot hit the wrong control. The ranking prefers inputs,
+  buttons and links, then text, and keeps only visible elements.
+- **Images:** `browser_screenshot` uses `Page.captureScreenshot` and feeds the PNG to the same image
+  path as `desktop_screenshot`, so only vision models can describe it.
+
+## Automatic updates
+
+`auto-update.ts` owns `electron-updater`. It starts only when `app.isPackaged` and the platform is
+Windows; a development checkout reports `disabled` with a clear message instead of contacting
+GitHub. Packaged builds check 10 s after launch and every 6 hours, download in the background
+(`autoDownload`), install on quit (`autoInstallOnAppQuit`), and expose `checking / available /
+downloading / ready / up-to-date / error` to the renderer. The release workflow attaches
+`latest.yml` and the `.blockmap`, so the feed needs no separate update server.
 
 ## Linux app projects
 
