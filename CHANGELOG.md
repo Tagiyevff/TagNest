@@ -3,6 +3,88 @@
 All notable changes to TagNest are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.7.0 — 2026-10-30
+
+### Added
+
+- **Phone access.** TagNest can now be controlled from an Android phone on the same network or from
+  anywhere through a Cloudflare quick tunnel. A pairing code creates a per-device token; the phone
+  gets the same chat, tool output, approval prompts, task history, stop/retry and the live Linux
+  desktop. The remote server exposes only the agent API and an authenticated noVNC WebSocket — not
+  SSH, the QEMU monitor or the raw VNC port.
+- **A real Flutter mobile app** (`mobile/`). Pairing screen, chat with expandable tool cards,
+  approval cards, task list, Linux start control, and an embedded desktop with pointer taps/drags,
+  scrolling and a keyboard panel. The release workflow builds a signed APK and attaches it next to
+  the Windows installer; CI analyzes, tests and builds it on every push.
+- **Three access modes** in Settings → Phone access: **Cloudflare quick tunnel** (no account, works
+  away from home), **Home network** (LAN address) and **Custom URL** (your own named tunnel or
+  reverse proxy). The pinned `cloudflared.exe` is downloaded once and SHA-256-verified; the tunnel
+  process is stopped when access is turned off.
+- **Remote access survives a restart.** The enabled state and mode are persisted and restored on
+  launch. While phone access is on, closing the window hides TagNest to the system tray instead of
+  quitting, and system sleep is blocked so the phone keeps its connection.
+- **Desktop keyboard input on the phone.** A keyboard button above the embedded desktop opens a
+  text field and sends real key events to the focused guest window; taps and drags use real RFB
+  pointer events.
+- QEMU's missing-install flow and the first-run checklist now cover the phone-access step; the
+  release notes and `mobile/README.md` document pairing, modes and signing.
+
+### Changed
+
+- Browser and desktop tools share one visible Chromium window, and the remote view reuses the same
+  token-protected noVNC bridge as the desktop panel.
+- The version is now `0.7.0` for both the Electron app and the Android app (`0.7.0+7`).
+
+### Security
+
+- Pairing codes expire after 15 minutes, are rate-limited and compared in constant time; only a
+  SHA-256 hash of each device token is stored. Remote API responses are `no-store`, mutations reject
+  cross-origin browser requests, and the noVNC upgrade requires the same device token. This is
+  documented in [docs/SECURITY.md](docs/SECURITY.md).
+- Android release signing is configured from repository secrets; keystores and `key.properties` are
+  git-ignored and never committed.
+
+## 0.6.0 — 2026-10-30
+
+### Added
+
+- **First-run checklist.** A dismissible dialog checks hardware virtualization, QEMU and the model
+  configuration before the first task. It offers the one-click QEMU install in place, links to
+  Settings for a missing key/model, and explains the exact Windows features needed for WHPX.
+  "Don't show again" is remembered per app version.
+- **Restore points before destructive commands.** After approval and before an approved destructive
+  command runs, the agent starts a live qcow2 snapshot with QMP `blockdev-snapshot-sync`. The Linux
+  panel shows the restore point and offers **Restore** (drop the overlay and boot the untouched
+  disk) and **Keep changes** (commit the overlay into the parent). Restore points persist across app
+  restarts; only one is kept at a time.
+- **Resumable Linux image download.** Progress now includes real download speed, Stop cancels an
+  in-flight download, and an interrupted download keeps its `.part` file. The next start sends an
+  HTTP Range request and verifies the final SHA-512. Bundled images are checksum-verified before
+  they are trusted. Content-Range parsing has unit tests.
+- **Diagnostics report.** A single text file with versions, runtime state, sanitized settings,
+  whether each provider has a stored key (never the key), disk sizes and log tails. API keys, the
+  VNC token and the home/data paths are redacted. Available from Settings → About and the Linux
+  panel; saved through the native Save dialog.
+- Stop is available while the image is downloading or the guest is provisioning, not only while the
+  desktop is running.
+
+### Changed
+
+- The guest disk is attached with `node-name=disk`, and the QEMU control channel uses QMP on a
+  random loopback port, so live snapshots can target the real block device.
+- Restore-point actions report QEMU's actual failure instead of claiming success when the host
+  cannot snapshot.
+
+### Fixed
+
+- An interrupted base-image download used to be deleted and restarted from zero; the partial file is
+  now kept and resumed.
+- A bundled base image was trusted without hashing it; it is now verified and falls back to a fresh
+  download if the hash does not match.
+- QEMU's RAM snapshot was investigated and is not usable with WHPX ("State blocked due to missing
+  dirty memory tracking support"); the implementation was changed to disk-only checkpoints rather
+  than shipping a button that always fails.
+
 ## 0.5.0 — 2026-10-29
 
 ### Added

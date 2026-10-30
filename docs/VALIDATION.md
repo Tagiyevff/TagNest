@@ -3,7 +3,7 @@
 This file records what was actually executed on the development machine, with the observed
 results. It is deliberately specific about what was **not** verified.
 
-- Date: 2026-10-26 → 2026-10-29
+- Date: 2026-10-26 → 2026-10-30
 - Host: Windows (Electron 45, Node 26.1.0, QEMU 11)
 - Guest: Alpine Linux 3.24.3 (kernel 6.18.58-0-virt), XFCE, Xvnc `:1` at 1440×900
 - Acceleration: WHPX (`-machine pc -accel whpx -cpu qemu64`), 2 vCPU, 3072 MB RAM, 20 GB sparse overlay
@@ -13,22 +13,232 @@ results. It is deliberately specific about what was **not** verified.
 ```text
 npm run typecheck   PASS
 npm run lint        PASS (0 problems)
-npm test            PASS (11 files, 97 tests)
+npm test            PASS (16 files, 119 tests)
 npm run build       PASS (electron-vite, main + preload + renderer)
-npm run package:win PASS (0.5.0, NSIS, release/TagNest-0.5.0-x64.exe; see the 0.5.0 section)
+npm run package:win PASS (0.7.0, NSIS, release/TagNest-0.7.0-x64.exe; see the 0.7.0 section)
 ```
 
-The 97 tests include the app-project tests (name and port validation, starter file contents,
+The 119 tests include the app-project tests (name and port validation, starter file contents,
 metadata parsing and rejection, HTML escaping), the update-check/version comparison, guest stats
 parser, upload path sanitizer, workspace listing confinement (including a symlink that resolves to
 `/etc`), download success/cancel with a mocked native dialog, the real provider connection check
-against a mock HTTP endpoint (success, missing key, 401, unreachable local server), and the 0.5.0
-browser helpers (ref parsing, element ranking, URL validation, page-text rewriting).
+against a mock HTTP endpoint (success, missing key, 401, unreachable local server), the 0.5.0
+browser helpers (ref parsing, element ranking, URL validation, page-text rewriting), and the 0.6.0
+Content-Range parser, restore-point metadata validation and diagnostics redaction.
 
 The unit tests cover the provider adapters against local mock HTTP servers (including a 401 mapped to
 a credential error, a body with data appended after the JSON document, a non-JSON body and an empty
 body), secret redaction, storage/settings persistence, path confinement helpers and the web helpers
 (URL validation, HTML→text conversion, search-result parsing).
+
+## 0.7.0 phone access, Flutter APK and tray (2026-10-30)
+
+### Automated checks
+
+```text
+npm run typecheck                 PASS
+npm run lint                      PASS (0 problems)
+npm test                          PASS (16 files, 119 tests)
+npm run build                     PASS
+npm run package:win               PASS (0.7.0, release/TagNest-0.7.0-x64.exe, 119 MB)
+cd mobile && flutter analyze      PASS (No issues found)
+cd mobile && flutter test         PASS (6 tests)
+cd mobile && flutter build apk    PASS (48.3 MB, release-signed)
+```
+
+The new desktop tests cover remote pairing/token storage, the HTTP server's pairing and auth
+helper logic, and the existing suites. The Flutter tests cover the pairing screen, server-address
+normalization (https default, trailing slash, empty, path rejection) and remote-state parsing.
+
+### Packaged app
+
+The `win-unpacked` build was launched with `--screenshot` and reported `TagNest 0.7.0 starting`; the
+captured window shows the real two-panel UI and the existing task history. The screenshot path was
+`.local/logs/packaged-070b.png` during validation. The NSIS installer itself was not installed on a
+clean machine.
+
+### Real phone flow over the public tunnel
+
+A release-signed APK (`CN=TagNest`, SHA-256 `767fccd145b32308141854896a20bb0c577f95463192a0a8be934f85a0096523`)
+was installed on an Android API 36 emulator. The desktop app had phone access enabled in **Cloudflare
+quick tunnel** mode and was connected to the real Alpine VM. The app paired with the public URL and
+the 6-digit code, then loaded the existing conversation and the live desktop. A second task was sent
+from the phone UI (`echo MOBILE-RELEASE-OK`) and the agent's real tool card showed the result:
+
+```text
+TAGNEST
+Exact output:
+
+MOBILE-RELEASE-OK
+
+Exit code: 0.
+Run command in Linux  Done
+```
+
+The Desktop tab rendered the actual XFCE terminal at 720×1280, and the **Keyboard** panel sent real
+keys to the focused guest terminal (the typed `uname` ran and printed `Linux`).
+
+A separate script exercised the public endpoint end to end against the same VM:
+
+```text
+HEALTH 200 {"ok":true,"app":"TagNest","version":"0.7.0"}
+PAIR 200 E2E phone
+STATE running devices-hidden true vnc-hidden true
+DESKTOP PAGE 200 true
+NOVNC 200 text/javascript; charset=utf-8
+VNC RFB 003.008
+SEND 200 {"ok":true,"conversationId":"…"}
+FINAL TASK done
+LAST MESSAGE Exact output: Linux 6.18.58-0-virt / REMOTE-E2E-OK / Exit code: 0.
+TOOL Run command in Linux ok
+OUTPUT Linux 6.18.58-0-virt
+       REMOTE-E2E-OK
+FORGET 200
+```
+
+That is a real Cloudflare quick tunnel, a real WebSocket RFB handshake through it, and a real model
+call that ran a shell command inside the VM. The script's last step revoked the device (`FORGET
+200`); rejection of the revoked token was covered by the remote server unit tests, not by a second
+live request here.
+
+### Tray and single-instance behavior
+
+With phone access running, sending a native window close (PowerShell `CloseMainWindow()`, equivalent
+to the title-bar X) logged:
+
+```text
+INFO [app] window close requested (quitting=false, remote=true, tray=true)
+```
+
+The window disappeared, the process and tunnel stayed up, and the remote endpoint still returned
+200. Launching TagNest again restored the existing window instead of starting a second server. A
+second process no longer registers `whenReady` after failing the single-instance lock; that bug was
+found during this test and fixed.
+
+### Not verified in 0.7.0
+
+- A real restart of the computer, then reconnecting a phone to a **new** quick-tunnel address. The
+  address is intentionally ephemeral; the UI and README say so. Re-pairing after a restart was not
+  performed on a phone in this run.
+- A stable custom URL through a named Cloudflare tunnel, Tailscale Funnel or the user's own server.
+  The Custom URL mode was typechecked and its normalization tested, but no such endpoint was
+  available to test here.
+- iOS, Google Play distribution, and installing the APK on a physical phone (the API 36 emulator
+  was used).
+- Android automatic updates: the APK is signed with the project key and can be installed over the
+  same package, but an in-place update from 0.6.x to 0.7.0 was not exercised (there was no 0.6.x
+  mobile build).
+- Installing the Windows 0.7.0 NSIS package on a clean machine (the packaged directory was run
+  directly).
+
+## 0.6.0 setup checklist, restore points, resumable downloads (2026-10-30)
+
+### Automated checks
+
+```text
+npm run typecheck   PASS
+npm run lint        PASS (0 problems)
+npm test            PASS (14 files, 108 tests)
+npm run build       PASS
+npm run package:win PASS (0.6.0, release/TagNest-0.6.0-x64.exe, 119 MB)
+```
+
+### Resumable base-image download (real network)
+
+`npx tsx .local/logs/resume-smoke.mts` used a brand-new data directory and the real Alpine CDN. It
+stopped the runtime at 20%, inspected the partial file, then started again:
+
+```text
+[abort] stopping at 20% (29 MB of 151 MB · 2.9 MB/s)
+INFO [provision] base image download interrupted; the partial file is kept
+[after-stop] phase=stopped partial=30769088 bytes (29.3 MB)
+INFO [provision] resuming base image download at 30769088 bytes
+[after-resume] image=157810688 bytes expected=157810688
+RESUME_SMOKE_PASSED
+```
+
+The resumed download passed the same SHA-512 check as a fresh one. The progress detail included the
+real speed (2.9 MB/s) and the final image size matched the pinned 157,810,688 bytes.
+
+### Restore points in the real VM
+
+QEMU's RAM snapshot was tested first and **does not work with WHPX**:
+
+```text
+WARN [checkpoint] restore point failed Error: Error: State blocked due to missing dirty memory
+tracking support,And some system register/state save-restore
+```
+
+That is a real QEMU limitation, not an app bug. The implementation therefore uses a disk-only qcow2
+overlay created live with QMP `blockdev-snapshot-sync`. `npx tsx .local/logs/checkpoint-smoke.mts`
+then exercised both outcomes against the real guest:
+
+```text
+[runtime] running after 29.9s
+INFO [runtime] restore point device: virtio0
+[create1] available= true active= true error= -
+[write] exit= 0 stdout= written after the restore point
+[restore] phase= running error= - took 44.2s
+[after] file: missing
+[create2] active= true error= -
+[write2] exit= 0 stdout= kept change
+[keep] phase= running active= false error= -
+[kept-file] kept change
+CHECKPOINT_SMOKE_PASSED
+```
+
+Restore discarded the file written after the snapshot; keep merged the overlay and the file survived
+the merge and reboot. The restore point was created in under 100 ms while the VM kept running. Both
+actions stop and restart the VM (44.2 s restore, ~15 s keep), because Windows keeps the qcow2 handle
+until QEMU exits.
+
+### First-run checklist (live and packaged app)
+
+`TAGNEST_FORCE_SETUP=1` was used as a UI test hook (it only opens the checklist). The real status
+was:
+
+```json
+{"setup":{"qemuFound":true,"qemuCanInstall":true,"acceleration":"whpx","firstRun":false,
+ "imageReady":true,"modelReady":true,"provider":"openrouter",
+ "model":"nvidia/nemotron-3.5-super-vl:free","needsSetup":true},"phase":"starting"}
+```
+
+The modal rendered all three checks with green states (screenshot: `docs/tagnest-setup.png`). The
+packaged `release/win-unpacked/TagNest.exe` reported `version: 0.6.0`, `wizard: true` and closed
+cleanly. The warning branches (missing QEMU, TCG, missing model) were exercised only by code
+inspection and the unit-tested status builder; the one-click install was not run because QEMU is
+already installed on this machine.
+
+### Agent loop after the runtime changes
+
+`npm run smoke:agent` passed again with the QMP argument and the restore-point hook in place:
+
+```text
+[agent] task=done tools=write_file:ok, run_command:ok, run_command:denied, web_fetch:ok,
+        web_search:ok, browser_open:ok, browser_read:ok
+[verify] browser_open saw the real page: true
+[verify] chromium process in the guest: running
+AGENT SMOKE PASSED
+```
+
+The denied `rm -rf` never reached the checkpoint path (the hook runs only after approval), so the
+smoke test does not prove the automatic snapshot is created for an approved destructive command;
+the manual checkpoint smoke covers the snapshot/restore mechanism itself.
+
+### Diagnostics
+
+The report builder is covered by unit tests for redaction (API keys, VNC token, home path) and for
+the version/runtime/settings sections. The native Save dialog was not clicked in this run, so saving
+through the dialog is typechecked and reviewed but not exercised end to end.
+
+### Not exercised in 0.6.0
+
+- QEMU installation from the checklist (QEMU was already installed).
+- Restore/keep during heavy guest I/O; only a quiet guest was tested.
+- A restore point created while the agent task is cancelled before the command finishes.
+- The diagnostics Save dialog and the resulting file written by the OS picker.
+- Running the 0.6.0 NSIS installer on a clean Windows machine (the packaged `win-unpacked` app was
+  launched instead).
 
 ## 0.5.0 browser automation, QEMU install, auto-updates (2026-10-29)
 
@@ -681,7 +891,7 @@ Unit tests cover the image mapping for all three adapters (data URL, base64 bloc
 - **Automatic update installation.** No newer release existed during the 0.5.0 build, so an update  download, signature check and install-on-quit were not observed end to end. The updater is
   disabled in development by design.
 - **QEMU installation through winget.** Not executed because QEMU was already installed; see the
-  0.5.0 section.
+  0.6.0 section.
 - **macOS and Linux hosts.** Only Windows was tested.
 - **Security auditing.** Isolation was checked behaviourally (no host mounts, NAT-only). No pen-test
   or QEMU-escape analysis was performed.

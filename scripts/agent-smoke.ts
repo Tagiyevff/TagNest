@@ -28,7 +28,8 @@ const settings: AppSettings = {
   cpus: 2,
   diskGB: 20,
   autoStartLinux: false,
-  approveSafeCommands: true
+  approveSafeCommands: true,
+  launchAtLogin: false
 }
 
 const server = createServer((request, response) => {

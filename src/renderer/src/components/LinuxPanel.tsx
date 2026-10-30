@@ -16,6 +16,9 @@ interface LinuxPanelProps {
   onRestart: () => void
   onOpenLogs: () => void
   onInstallQemu: () => void
+  onCreateCheckpoint: () => void
+  onRollbackCheckpoint: () => void
+  onKeepCheckpoint: () => void
 }
 
 const PHASE_KEYS: Record<RuntimePhase, Parameters<Translate>[0]> = {
@@ -414,18 +417,16 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
               <Icon name="alert" size={14} />
             </span>
           ) : null}
-          {phase === 'running' || phase === 'stopped' || phase === 'error' ? (
-            phase === 'running' ? (
-              <button type="button" className="stage-button" onClick={props.onStop} title={t('stop')}>
-                <Icon name="stop" size={12} />
-                <span>{t('stop')}</span>
-              </button>
-            ) : (
-              <button type="button" className="stage-button primary" onClick={props.onStart} title={t('start')}>
-                <Icon name="play" size={12} />
-                <span>{t('start')}</span>
-              </button>
-            )
+          {phase === 'stopped' || phase === 'error' ? (
+            <button type="button" className="stage-button primary" onClick={props.onStart} title={t('start')}>
+              <Icon name="play" size={12} />
+              <span>{t('start')}</span>
+            </button>
+          ) : phase !== 'stopping' ? (
+            <button type="button" className="stage-button" onClick={props.onStop} title={t('stop')}>
+              <Icon name="stop" size={12} />
+              <span>{t('stop')}</span>
+            </button>
           ) : null}
           <button
             type="button"
@@ -463,6 +464,56 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
           </button>
         </div>
       </header>
+
+      {phase === 'running' && runtime.checkpoint ? (
+        <div className={`checkpoint-bar ${runtime.checkpoint.error ? 'error' : ''}`}>
+          <span className="checkpoint-label">
+            <Icon name="history" size={13} />
+            {runtime.checkpoint.active && runtime.checkpoint.createdAt
+              ? t('checkpointActive', { time: new Date(runtime.checkpoint.createdAt).toLocaleTimeString() })
+              : t('checkpointNone')}
+          </span>
+          {runtime.checkpoint.error ? (
+            <span className="checkpoint-error" title={runtime.checkpoint.error}>
+              {t('checkpointFailed')}
+            </span>
+          ) : null}
+          {runtime.checkpoint.busy ? <span className="mini-spin dark" /> : null}
+          <div className="checkpoint-actions">
+            {runtime.checkpoint.active ? (
+              <>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={runtime.checkpoint.busy}
+                  onClick={props.onKeepCheckpoint}
+                >
+                  {t('checkpointKeep')}
+                </button>
+                <button
+                  type="button"
+                  className="button solid small"
+                  disabled={runtime.checkpoint.busy}
+                  onClick={() => {
+                    if (window.confirm(t('checkpointRestoreConfirm'))) props.onRollbackCheckpoint()
+                  }}
+                >
+                  {t('checkpointRestore')}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={runtime.checkpoint.busy}
+                onClick={props.onCreateCheckpoint}
+              >
+                {t('checkpointCreate')}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div
         className="desktop-shell"
@@ -643,6 +694,23 @@ export function LinuxPanel(props: LinuxPanelProps): JSX.Element {
             <p className="modal-sub">{t('showLogsHint')}</p>
             <pre className="logs-output">{logsLoading ? '…' : logs}</pre>
             <div className="modal-actions">
+              <button
+                type="button"
+                className="button ghost"
+                onClick={() => {
+                  void window.tagnest.app
+                    .diagnostics()
+                    .then((result) => {
+                      if (!result.saved) return
+                      setFilesError('')
+                      setFilesNotice(t('diagnosticsSaved'))
+                      setLogsOpen(false)
+                    })
+                    .catch((error: unknown) => setLogs(`Diagnostics failed: ${cleanPanelError(error)}`))
+                }}
+              >
+                {t('diagnostics')}
+              </button>
               <button type="button" className="button ghost" onClick={() => void window.tagnest.runtime.openLogFolder()}>
                 {t('openLogs')}
               </button>

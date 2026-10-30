@@ -30,7 +30,8 @@ const settings: AppSettings = {
   cpus: Number(process.env.TAGNEST_SMOKE_CPUS ?? 2),
   diskGB: 20,
   autoStartLinux: false,
-  approveSafeCommands: true
+  approveSafeCommands: true,
+  launchAtLogin: false
 }
 
 const runtime = new LinuxRuntime(dataDir, () => settings)

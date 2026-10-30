@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import type { AppSettings, GuestStats, RuntimeState } from '../../shared/types'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { AppSettings, CheckpointState, GuestStats, RuntimeState } from '../../shared/types'
 import { logger } from '../logger'
 import { readJsonFile, writeJsonFileAtomic } from '../storage/json'
 import { BROWSER_PROXY_PORT, GUEST_VNC_PORT, QEMU_DOWNLOAD_URL } from './config'
@@ -14,8 +15,19 @@ import {
 } from './guest'
 import { GuestBrowser } from './browser'
 import { canAutoInstallQemu, installQemu } from './qemu-install'
-import { detectAcceleration, findQemuBinary } from './qemu'
-import { LinuxProvisioner, linuxPaths } from './provision'
+import { detectAcceleration, findQemuBinary, findQemuImgBinary } from './qemu'
+import {
+  CHECKPOINT_DIR,
+  CHECKPOINT_FILE,
+  QemuQmp,
+  checkpointOverlayName,
+  commitDiskSnapshot,
+  deleteCheckpointOverlay,
+  logCheckpointFailure,
+  validCheckpoint,
+  type CheckpointMeta
+} from './checkpoint'
+import { LinuxProvisioner, linuxPaths, type LinuxPaths } from './provision'
 import { GuestClient, type ExecOptions, type ExecResult } from './ssh'
 import { readGuestStats } from './stats'
 import { VncBridge, getFreeLoopbackPort, waitForTcpPort } from './vnc'
@@ -57,6 +69,11 @@ export class LinuxRuntime {
   private sshHostPort: number | null = null
   private accelCache: { acceleration: RuntimeState['acceleration']; warning?: string } | null = null
   private statsCache: { at: number; startedAt?: number; value: GuestStats | null } | null = null
+  private startAbort: AbortController | null = null
+  private monitor: QemuQmp | null = null
+  private monitorPort: number | null = null
+  private checkpointMeta: CheckpointMeta | null = null
+  private checkpointBusy = false
 
   constructor(
     userDataDir: string,
@@ -65,6 +82,8 @@ export class LinuxRuntime {
     const paths = linuxPaths(userDataDir)
     this.provisioner = new LinuxProvisioner(paths)
     this.guest = new GuestClient(paths.privateKey)
+    const saved = readJsonFile<unknown>(join(paths.root, CHECKPOINT_FILE), null)
+    this.checkpointMeta = validCheckpoint(saved, existsSync)
     this.state = {
       phase: 'stopped',
       message: 'Linux is not running',
@@ -74,7 +93,12 @@ export class LinuxRuntime {
       logPath: paths.serialLog,
       qemuFound: Boolean(findQemuBinary()),
       qemuCanInstall: canAutoInstallQemu(),
-      qemuInstalling: false
+      qemuInstalling: false,
+      checkpoint: {
+        available: false,
+        active: Boolean(this.checkpointMeta),
+        createdAt: this.checkpointMeta?.createdAt
+      }
     }
   }
 
@@ -133,6 +157,156 @@ export class LinuxRuntime {
     return this.getState()
   }
 
+  private async getMonitor(): Promise<QemuQmp> {
+    if (this.state.phase !== 'running') {
+      throw new Error('The Linux environment is not running.')
+    }
+    if (!this.monitorPort) throw new Error('The QEMU control socket is unavailable for this session.')
+    if (!this.monitor) this.monitor = new QemuQmp(this.monitorPort)
+    return this.monitor
+  }
+
+  private checkpointPath(): string {
+    return join(this.provisioner.paths.root, CHECKPOINT_FILE)
+  }
+
+  private removeCheckpointMeta(): void {
+    try {
+      unlinkSync(this.checkpointPath())
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /** The disk QEMU must boot: the checkpoint overlay when one is active. */
+  private activeDiskPath(): string {
+    return this.checkpointMeta?.overlay ?? this.provisioner.paths.disk
+  }
+
+  private updateCheckpoint(patch: Partial<CheckpointState>): void {
+    this.setState({
+      checkpoint: {
+        available: this.state.phase === 'running',
+        active: Boolean(this.checkpointMeta),
+        createdAt: this.checkpointMeta?.createdAt,
+        ...this.state.checkpoint,
+        ...patch
+      }
+    })
+  }
+
+  /**
+   * Starts a new qcow2 overlay while the VM runs. RAM snapshots are not
+   * available under WHPX, so a restore point protects the workspace files:
+   * everything written after it goes to the overlay and can be discarded.
+   * Only one restore point is kept and an existing one is never overwritten.
+   */
+  async createCheckpoint(reason = 'manual'): Promise<RuntimeState> {
+    if (this.state.phase !== 'running' || this.checkpointBusy) return this.getState()
+    if (this.checkpointMeta) return this.getState()
+    this.checkpointBusy = true
+    this.updateCheckpoint({ busy: true, error: undefined })
+    try {
+      const qmp = await this.getMonitor()
+      const dir = join(this.provisioner.paths.root, CHECKPOINT_DIR)
+      mkdirSync(dir, { recursive: true })
+      const overlay = join(dir, checkpointOverlayName())
+      logger.info('runtime', `creating a restore point (${reason})`)
+      // The block device name depends on the QEMU machine layout, so ask QEMU
+      // which device carries the Linux disk instead of assuming one.
+      const blocks = await qmp.execute<Array<{ device?: string; inserted?: { file?: string } }>>(
+        'query-block'
+      )
+      const target = blocks.find((entry) => entry.inserted && entry.device)
+      if (!target?.device) throw new Error('The Linux disk is not attached to QEMU.')
+      logger.info('runtime', `restore point device: ${target.device}`)
+      await qmp.execute(
+        'blockdev-snapshot-sync',
+        { device: target.device, 'snapshot-file': overlay, format: 'qcow2' },
+        120_000
+      )
+      this.checkpointMeta = {
+        overlay,
+        parent: this.provisioner.paths.disk,
+        createdAt: Date.now()
+      }
+      writeJsonFileAtomic(this.checkpointPath(), this.checkpointMeta)
+      logger.info('runtime', 'restore point created')
+      this.updateCheckpoint({
+        busy: false,
+        active: true,
+        createdAt: this.checkpointMeta.createdAt,
+        error: undefined
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logCheckpointFailure('restore point', error)
+      this.updateCheckpoint({ busy: false, error: message })
+    }
+    this.checkpointBusy = false
+    return this.getState()
+  }
+
+  /**
+   * Discards the restore-point overlay and boots the untouched parent disk.
+   * The VM must stop first, because QEMU owns the overlay file while it runs.
+   */
+  async rollbackCheckpoint(): Promise<RuntimeState> {
+    const meta = this.checkpointMeta
+    if (!meta || this.checkpointBusy) return this.getState()
+    this.checkpointBusy = true
+    this.updateCheckpoint({ busy: true, error: undefined })
+    const wasRunning = this.state.phase === 'running'
+    try {
+      if (this.state.phase !== 'stopped') await this.stop()
+      await deleteCheckpointOverlay(meta.overlay)
+      this.checkpointMeta = null
+      this.removeCheckpointMeta()
+      logger.info('runtime', 'restore point applied; changes after it were discarded')
+      this.updateCheckpoint({ busy: false, active: false, createdAt: undefined, error: undefined })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logCheckpointFailure('restore', error)
+      this.updateCheckpoint({ busy: false, error: message })
+      this.checkpointBusy = false
+      if (wasRunning && this.state.phase === 'stopped') await this.start()
+      return this.getState()
+    }
+    this.checkpointBusy = false
+    if (wasRunning) await this.start()
+    return this.getState()
+  }
+
+  /** Merges the restore-point overlay into the parent, keeping the changes. */
+  async keepCheckpoint(): Promise<RuntimeState> {
+    const meta = this.checkpointMeta
+    if (!meta || this.checkpointBusy) return this.getState()
+    this.checkpointBusy = true
+    this.updateCheckpoint({ busy: true, error: undefined })
+    const wasRunning = this.state.phase === 'running'
+    try {
+      if (this.state.phase !== 'stopped') await this.stop()
+      const qemuImg = findQemuImgBinary()
+      if (!qemuImg) throw new Error('qemu-img was not found, so the changes could not be kept.')
+      await commitDiskSnapshot(qemuImg, meta.overlay)
+      await deleteCheckpointOverlay(meta.overlay)
+      this.checkpointMeta = null
+      this.removeCheckpointMeta()
+      logger.info('runtime', 'restore point merged; the current Linux state is kept')
+      this.updateCheckpoint({ busy: false, active: false, createdAt: undefined, error: undefined })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logCheckpointFailure('restore point merge', error)
+      this.updateCheckpoint({ busy: false, error: message })
+      this.checkpointBusy = false
+      if (wasRunning && this.state.phase === 'stopped') await this.start()
+      return this.getState()
+    }
+    this.checkpointBusy = false
+    if (wasRunning) await this.start()
+    return this.getState()
+  }
+
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     const guest = this.getGuest()
     const result = await guest.exec(command, options)
@@ -158,6 +332,23 @@ export class LinuxRuntime {
     return this.provisioner.paths.logsDir
   }
 
+  /** Data-directory paths used by the diagnostics report. */
+  getLinuxPaths(): LinuxPaths {
+    return this.provisioner.paths
+  }
+
+  /** Cached acceleration probe used by the first-run setup checks. */
+  async getAccelerationStatus(): Promise<{
+    acceleration: RuntimeState['acceleration']
+    warning?: string
+  }> {
+    if (this.accelCache) return this.accelCache
+    const qemu = findQemuBinary()
+    if (!qemu) return { acceleration: 'unknown' }
+    this.accelCache = await detectAcceleration(qemu)
+    return this.accelCache
+  }
+
   async getLogs(): Promise<{ logPath: string; tail: string }> {
     const serial = tailFile(this.provisioner.paths.serialLog, 160)
     const stderr = tailFile(this.provisioner.paths.stderrLog, 50)
@@ -175,12 +366,15 @@ export class LinuxRuntime {
     }
     this.starting = this.doStart().finally(() => {
       this.starting = null
+      this.startAbort = null
     })
     return this.starting
   }
 
   async stop(): Promise<void> {
     if (this.state.phase === 'stopped') return
+    // A download or provisioning step in flight must stop too, not just QEMU.
+    this.startAbort?.abort()
     this.stopping = true
     this.setState({ phase: 'stopping', message: 'Stopping Linux…', error: undefined })
     try {
@@ -196,19 +390,27 @@ export class LinuxRuntime {
       await this.guest.disconnect().catch(() => undefined)
       await this.bridge?.close().catch(() => undefined)
       this.bridge = null
+      this.monitor?.close()
+      this.monitor = null
+      this.monitorPort = null
       await this.seed?.close().catch(() => undefined)
       this.seed = null
       this.qemu = null
-    this.stopping = false
-    this.statsCache = null
-    this.setState({
-      phase: 'stopped',
+      this.stopping = false
+      this.statsCache = null
+      this.setState({
+        phase: 'stopped',
         message: 'Linux is stopped',
         vncUrl: undefined,
         sshPort: undefined,
         startedAt: undefined,
         progress: undefined,
-        detail: undefined
+        detail: undefined,
+        checkpoint: {
+          available: false,
+          active: Boolean(this.checkpointMeta),
+          createdAt: this.checkpointMeta?.createdAt
+        }
       })
     }
   }
@@ -224,6 +426,9 @@ export class LinuxRuntime {
 
   private async doStart(): Promise<void> {
     const settings = this.getSettings()
+    const controller = new AbortController()
+    this.startAbort = controller
+    const signal = controller.signal
     const qemuBinary = findQemuBinary()
     this.setState({
       qemuFound: Boolean(qemuBinary),
@@ -259,15 +464,31 @@ export class LinuxRuntime {
       const { publicKey } = this.provisioner.ensureSshKey()
 
       this.setState({ detail: 'Checking the Linux base image' })
-      const baseImage = await this.provisioner.ensureBaseImage((received, total) => {
-        const progress = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : undefined
-        this.setState({
-          phase: 'downloading-image',
-          message: 'Downloading the Linux base image…',
-          detail: `${(received / 1024 / 1024).toFixed(0)} MB of ${(total / 1024 / 1024).toFixed(0)} MB`,
-          progress
-        })
-      })
+      let sampleAt = Date.now()
+      let sampleBytes = 0
+      let speedMBps = 0
+      const baseImage = await this.provisioner.ensureBaseImage(
+        (received, total, resumedFrom = 0) => {
+          const at = Date.now()
+          if (at - sampleAt >= 500) {
+            speedMBps = ((received - sampleBytes) / 1048576) * (1000 / (at - sampleAt))
+            sampleAt = at
+            sampleBytes = received
+          }
+          const progress = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : undefined
+          const resumed = resumedFrom > 0 && received <= resumedFrom + 1
+          this.setState({
+            phase: 'downloading-image',
+            message: resumed ? 'Resuming the Linux image download…' : 'Downloading the Linux base image…',
+            detail: `${(received / 1024 / 1024).toFixed(0)} MB of ${(total / 1024 / 1024).toFixed(0)} MB${
+              speedMBps > 0.05 ? ` · ${speedMBps.toFixed(1)} MB/s` : ''
+            }`,
+            progress
+          })
+        },
+        { signal }
+      )
+      if (signal.aborted) return
       logger.info('runtime', `base image ready: ${baseImage}`)
 
       this.setState({
@@ -277,6 +498,7 @@ export class LinuxRuntime {
         progress: undefined
       })
       const { created } = await this.provisioner.ensureDisk(settings.diskGB, baseImage)
+      if (signal.aborted || this.stopping) return
 
       const stateFile = this.readProvisionState()
       const firstBoot = created || !stateFile.provisioned || !stateFile.instanceId
@@ -289,6 +511,10 @@ export class LinuxRuntime {
       const vncPort = await getFreeLoopbackPort()
       const browserPort = await getFreeLoopbackPort()
       this.browserHostPort = browserPort
+      const monitorPort = await getFreeLoopbackPort()
+      this.monitorPort = monitorPort
+      this.monitor?.close()
+      this.monitor = null
       logger.info('runtime', `browser control will be forwarded on 127.0.0.1:${browserPort}`)
       this.bridge = new VncBridge()
       const bridge = await this.bridge.start(vncPort)
@@ -317,7 +543,7 @@ export class LinuxRuntime {
         '-m',
         String(settings.memoryMB),
         '-drive',
-        `file=${this.provisioner.paths.disk},if=virtio,format=qcow2`,
+        `file=${this.activeDiskPath()},if=virtio,format=qcow2,node-name=disk`,
         '-netdev',
         `user,id=net0,hostfwd=tcp:127.0.0.1:${sshPort}-:22,hostfwd=tcp:127.0.0.1:${vncPort}-:${GUEST_VNC_PORT},hostfwd=tcp:127.0.0.1:${browserPort}-:${BROWSER_PROXY_PORT}`,
         '-device',
@@ -329,6 +555,8 @@ export class LinuxRuntime {
         ...(debugVnc ? ['-vnc', debugVnc] : []),
         '-serial',
         `file:${this.provisioner.paths.serialLog}`,
+        '-qmp',
+        `tcp:127.0.0.1:${monitorPort},server,nowait`,
         '-no-reboot'
       ]
 
@@ -343,6 +571,7 @@ export class LinuxRuntime {
         progress: undefined
       })
 
+      if (signal.aborted || this.stopping) return
       const qemu = spawn(qemuBinary, args, {
         windowsHide: true,
         stdio: ['ignore', 'ignore', 'pipe']
@@ -376,6 +605,7 @@ export class LinuxRuntime {
       // A fresh disk spends several minutes in cloud-init datasource discovery
       // before the seed is applied; later boots only need a short wait.
       const sshReady = await this.waitForSsh(sshPort, firstBoot ? 900_000 : 180_000)
+      if (signal.aborted || this.stopping) return
       if (!sshReady) {
         this.fail(
           'Linux did not finish booting.',
@@ -460,9 +690,18 @@ export class LinuxRuntime {
         error: undefined,
         warning:
           [this.accelCache?.warning, this.state.warning].filter(Boolean).join(' ') || undefined,
+        checkpoint: {
+          available: true,
+          active: Boolean(this.checkpointMeta),
+          createdAt: this.checkpointMeta?.createdAt
+        }
       })
       logger.info('runtime', `guest is ready on ssh:${sshPort}, vnc:${vncPort}`)
     } catch (error) {
+      if (signal.aborted || this.stopping) {
+        logger.info('runtime', 'start cancelled by the user')
+        return
+      }
       const message = error instanceof Error ? error.message : String(error)
       logger.error('runtime', 'start failed', error)
       this.fail('TagNest could not start Linux.', message)
@@ -679,9 +918,17 @@ export class LinuxRuntime {
       vncUrl: undefined,
       progress: undefined,
       startedAt: undefined,
-      qemuInstalling: false
+      qemuInstalling: false,
+      checkpoint: {
+        available: false,
+        active: Boolean(this.checkpointMeta),
+        createdAt: this.checkpointMeta?.createdAt
+      }
     })
     this.browserHostPort = null
+    this.monitor?.close()
+    this.monitor = null
+    this.monitorPort = null
   }
 
   private async cleanupAfterFailure(): Promise<void> {

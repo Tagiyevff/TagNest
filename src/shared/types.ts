@@ -102,6 +102,8 @@ export interface AppSettings {
   diskGB: number
   autoStartLinux: boolean
   approveSafeCommands: boolean
+  /** Start TagNest when the user signs in, so phone access can reconnect. */
+  launchAtLogin: boolean
 }
 
 export interface SettingsView extends AppSettings {
@@ -123,10 +125,38 @@ export type RuntimePhase =
 
 export type Acceleration = 'whpx' | 'tcg' | 'unknown'
 
+export interface DiagnosticsResult {
+  saved: boolean
+  path?: string
+}
+
+export interface SetupStatus {
+  qemuFound: boolean
+  qemuCanInstall: boolean
+  acceleration: Acceleration
+  accelerationWarning?: string
+  firstRun: boolean
+  imageReady: boolean
+  modelReady: boolean
+  provider: ProviderId
+  model?: string
+  needsSetup: boolean
+}
+
 export interface RuntimeErrorInfo {
   message: string
   hint?: string
   detail?: string
+}
+
+export interface CheckpointState {
+  /** The running VM supports snapshots right now. */
+  available: boolean
+  /** A restore point exists and can be rolled back to. */
+  active: boolean
+  createdAt?: number
+  busy?: boolean
+  error?: string
 }
 
 export interface RuntimeState {
@@ -150,6 +180,8 @@ export interface RuntimeState {
   qemuCanInstall: boolean
   qemuInstalling: boolean
   qemuInstallMessage?: string
+  /** Automatic restore point taken before destructive agent commands. */
+  checkpoint?: CheckpointState
 }
 
 export type ToolCallState = 'running' | 'awaiting-approval' | 'ok' | 'error' | 'denied' | 'cancelled'
@@ -246,6 +278,7 @@ export interface AppSnapshot {
   conversations: ConversationSummary[]
   activeConversationId: string | null
   task: TaskState
+  remote: RemoteAccessState
 }
 
 export type WorkspaceEntryType = 'file' | 'directory' | 'symlink' | 'other'
@@ -379,4 +412,36 @@ export interface GuestInfo {
   workspace: string
   memoryMB: number
   disk: string
+}
+
+/** How a paired phone reaches this computer. */
+export type RemoteMode = 'tunnel' | 'lan' | 'custom'
+
+export type RemotePhase = 'stopped' | 'starting' | 'running' | 'error'
+
+export interface RemoteDevice {
+  id: string
+  name: string
+  createdAt: number
+  lastSeenAt?: number
+}
+
+/** Local state of the phone access server, mirrored in Settings. */
+export interface RemoteAccessState {
+  enabled: boolean
+  phase: RemotePhase
+  mode: RemoteMode
+  message: string
+  /** Address to open on the phone (tunnel URL, LAN URL or custom URL). */
+  url?: string
+  /** Local origin the server is bound to, useful for custom tunnels. */
+  localUrl?: string
+  lanUrl?: string
+  customUrl?: string
+  port?: number
+  pairingCode?: string
+  pairingExpiresAt?: number
+  devices: RemoteDevice[]
+  error?: string
+  tunnelProgress?: number
 }

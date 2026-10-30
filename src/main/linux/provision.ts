@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { utils as sshUtils } from 'ssh2'
 import { logger } from '../logger'
 import { BASE_IMAGE } from './config'
@@ -75,9 +76,16 @@ export class LinuxProvisioner {
 
   /**
    * Ensures an official Alpine cloud image is present and verified.
-   * Downloads are checksum-verified against a pinned SHA-512.
+   *
+   * Downloads are checksum-verified against the pinned SHA-512 and written to a
+   * `.part` file. An interrupted download resumes with an HTTP Range request
+   * instead of starting over, and aborting (for example by stopping the
+   * runtime) keeps the partial file for the next attempt.
    */
-  async ensureBaseImage(onProgress: (received: number, total: number) => void): Promise<string> {
+  async ensureBaseImage(
+    onProgress: (received: number, total: number, resumedFrom?: number) => void,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<string> {
     mkdirSync(this.paths.logsDir, { recursive: true })
     const override = process.env.TAGNEST_BASE_IMAGE
     if (override && existsSync(override)) {
@@ -92,13 +100,17 @@ export class LinuxProvisioner {
     if (bundled && !existsSync(this.paths.baseImage)) {
       const { copyFileSync } = await import('node:fs')
       logger.info('provision', 'copying bundled Linux base image into the data directory')
-      copyFileSync(bundled, this.paths.baseImage)
-      writeJsonFileAtomic(`${this.paths.baseImage}.verified.json`, {
-        sha512: BASE_IMAGE.sha512,
-        source: 'bundled'
-      })
-      onProgress(BASE_IMAGE.downloadBytes, BASE_IMAGE.downloadBytes)
-      return this.paths.baseImage
+      const partial = `${this.paths.baseImage}.part`
+      copyFileSync(bundled, partial)
+      const digest = await sha512File(partial)
+      if (digest === BASE_IMAGE.sha512) {
+        renameSync(partial, this.paths.baseImage)
+        writeJsonFileAtomic(`${this.paths.baseImage}.verified.json`, { sha512: digest, source: 'bundled' })
+        onProgress(BASE_IMAGE.downloadBytes, BASE_IMAGE.downloadBytes, 0)
+        return this.paths.baseImage
+      }
+      unlinkSync(partial)
+      logger.warn('provision', 'bundled base image failed verification; downloading a fresh copy')
     }
     if (existsSync(this.paths.baseImage)) {
       const verified = readJsonFile<{ sha512?: string }>(`${this.paths.baseImage}.verified.json`, {})
@@ -116,29 +128,84 @@ export class LinuxProvisioner {
     }
 
     const partial = `${this.paths.baseImage}.part`
-    if (existsSync(partial)) unlinkSync(partial)
+    let start = 0
+    if (existsSync(partial)) {
+      start = statSync(partial).size
+      if (start >= BASE_IMAGE.downloadBytes) {
+        // A complete-looking partial from an earlier run: verify it directly.
+        const digest = await sha512File(partial)
+        if (digest === BASE_IMAGE.sha512) {
+          renameSync(partial, this.paths.baseImage)
+          writeJsonFileAtomic(`${this.paths.baseImage}.verified.json`, {
+            sha512: digest,
+            downloadedAt: new Date().toISOString()
+          })
+          onProgress(BASE_IMAGE.downloadBytes, BASE_IMAGE.downloadBytes, 0)
+          return this.paths.baseImage
+        }
+        unlinkSync(partial)
+        start = 0
+      } else if (start > 0) {
+        logger.info('provision', `resuming base image download at ${start} bytes`)
+      }
+    }
 
     logger.info('provision', `downloading base image ${BASE_IMAGE.fileName}`)
-    const response = await fetch(BASE_IMAGE.url, { redirect: 'follow' })
+    const response = await fetch(BASE_IMAGE.url, {
+      redirect: 'follow',
+      signal: options.signal,
+      headers: start > 0 ? { range: `bytes=${start}-` } : undefined
+    })
+
+    if (response.status === 416 && start > 0) {
+      // Nothing left to fetch. The partial file either is the complete image or
+      // is unusable; verify it instead of asking for a range again.
+      const digest = await sha512File(partial)
+      if (digest === BASE_IMAGE.sha512) {
+        renameSync(partial, this.paths.baseImage)
+        writeJsonFileAtomic(`${this.paths.baseImage}.verified.json`, {
+          sha512: digest,
+          downloadedAt: new Date().toISOString()
+        })
+        onProgress(BASE_IMAGE.downloadBytes, BASE_IMAGE.downloadBytes, 0)
+        return this.paths.baseImage
+      }
+      unlinkSync(partial)
+      return this.ensureBaseImage(onProgress, options)
+    }
+
     if (!response.ok || !response.body) {
       throw new Error(`Could not download the Linux image (HTTP ${response.status}). Check your internet connection.`)
     }
-    const total = Number(response.headers.get('content-length')) || BASE_IMAGE.downloadBytes
+
+    const resumed = start > 0 && response.status === 206
+    if (start > 0 && !resumed) {
+      logger.info('provision', 'the server ignored the range request; starting the download over')
+    }
+    const contentLength = Number(response.headers.get('content-length')) || 0
+    const total =
+      contentRangeTotal(response.headers.get('content-range')) ??
+      ((resumed ? start + contentLength : contentLength) || BASE_IMAGE.downloadBytes)
     const hash = createHash('sha512')
-    let received = 0
-    const file = await import('node:fs').then(({ createWriteStream }) => createWriteStream(partial, { mode: 0o644 }))
+    if (resumed) await hashFileInto(partial, hash)
+
+    const { createWriteStream } = await import('node:fs')
+    const file = createWriteStream(partial, { flags: resumed ? 'a' : 'w', mode: 0o644 })
     const body = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream<Uint8Array>)
-    await new Promise<void>((resolve, reject) => {
-      body.on('data', (chunk: Buffer) => {
-        hash.update(chunk)
-        received += chunk.length
-        onProgress(received, total)
-      })
-      body.on('error', reject)
-      file.on('error', reject)
-      file.on('finish', resolve)
-      body.pipe(file)
+    let received = resumed ? start : 0
+    body.on('data', (chunk: Buffer) => {
+      hash.update(chunk)
+      received += chunk.length
+      onProgress(received, total, resumed ? start : 0)
     })
+
+    try {
+      await pipeline(body, file, options.signal ? { signal: options.signal } : undefined)
+    } catch (error) {
+      // Keep the partial file: the next start continues from here.
+      logger.info('provision', 'base image download interrupted; the partial file is kept')
+      throw error
+    }
 
     const digest = hash.digest('hex')
     if (digest !== BASE_IMAGE.sha512) {
@@ -295,12 +362,26 @@ function bundledBaseImagePath(): string | null {
 }
 
 async function sha512File(path: string): Promise<string> {
+  const hash = createHash('sha512')
+  await hashFileInto(path, hash)
+  return hash.digest('hex')
+}
+
+async function hashFileInto(path: string, hash: ReturnType<typeof createHash>): Promise<void> {
   const { createReadStream } = await import('node:fs')
-  return new Promise<string>((resolve, reject) => {
-    const hash = createHash('sha512')
+  await new Promise<void>((resolve, reject) => {
     const stream = createReadStream(path)
     stream.on('data', (chunk) => hash.update(chunk))
     stream.on('error', reject)
-    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.on('end', () => resolve())
   })
+}
+
+/** Parses the total size out of an HTTP `Content-Range: bytes 0-1/1234` header. */
+export function contentRangeTotal(header: string | null): number | null {
+  if (!header) return null
+  const match = /\/\s*(\d+)\s*$/.exec(header)
+  if (!match) return null
+  const total = Number(match[1])
+  return Number.isFinite(total) && total > 0 ? total : null
 }

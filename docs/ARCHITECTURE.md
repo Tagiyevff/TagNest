@@ -11,6 +11,7 @@ src/
   main/
     index.ts         window, CSP, lifecycle, auto-start
     ipc.ts           validated IPC handlers
+    diagnostics.ts   redacted support report (versions, state, log tails)
     logger.ts        redacted file log
     storage/         settings, DPAPI secrets, conversations (atomic JSON)
     linux/
@@ -19,6 +20,7 @@ src/
       guest.ts       first-boot provisioning script (cloud-init user-data)
       qemu.ts        binary discovery, WHPX probe, acceleration fallback
       qemu-install.ts fixed winget install with the Windows UAC prompt
+      checkpoint.ts  QMP client, disk restore points, overlay commit/delete
       runtime.ts     lifecycle state machine, boot/provision/ready detection
       ssh.ts         SSH exec + SFTP wrapper, cancellation, output limits
       vnc.ts         token-authenticated WebSocket→TCP RFB bridge
@@ -35,6 +37,12 @@ src/
     auto-update.ts   electron-updater controller (packaged Windows builds)
     apps/
       projects.ts    Linux app projects: templates, metadata, test, run and stop
+    remote/
+      remote.ts      remote-access state machine, settings and restore-on-launch
+      server.ts      HTTP API, pairing, session cookies and noVNC WebSocket proxy
+      mobile.ts      phone-friendly HTML shell for /desktop
+      store.ts       device tokens, pairing code, enabled/mode persistence
+      tunnel.ts      pinned cloudflared download and quick-tunnel lifecycle
     workspace/
       files.ts       Windows↔Linux SFTP bridge, listing and symlink-safe checks
   renderer/
@@ -49,7 +57,9 @@ src/
    `C:\Program Files\qemu`, PATH) and probes WHPX by launching a paused 128 MB VM. Failure falls
    back to TCG with an explicit warning.
 2. `LinuxProvisioner.ensureBaseImage()` prefers `TAGNEST_BASE_IMAGE`, then a bundled image, then a
-   checksum-protected download to the user data directory.
+   checksum-protected download to the user data directory. The download is written to a `.part`
+   file, resumes with an HTTP Range request after an interruption, and is only renamed after its
+   SHA-512 matches. A bundled image is hashed before it is trusted.
 3. `ensureDisk()` creates a qcow2 overlay backed by the base image. Existing overlays are never
    recreated. Because the overlay is the user's data, the base can be replaced safely.
 4. A per-install SSH keypair is generated (`ssh2.utils.generateKeyPairSync`).
@@ -58,8 +68,9 @@ src/
    guest reaches the host through QEMU's user-mode network. Serving a valid `network-config` matters:
    a 404 there makes some cloud-init versions abandon the seed and spend minutes probing public
    cloud metadata endpoints before retrying.
-6. QEMU starts headless with `-machine pc -accel whpx -cpu qemu64`, virtio disk/NIC, and loopback
-   forwards for SSH (random port → 22) and VNC (random port → 5901).
+6. QEMU starts headless with `-machine pc -accel whpx -cpu qemu64`, a virtio disk (`node-name=disk`)
+   and NIC, loopback forwards for SSH (random port → 22) and VNC (random port → 5901), and a QMP
+   control socket on a random loopback port.
 7. On a fresh disk main waits up to 15 minutes for SSH (cloud-init datasource discovery plus the
    guest's first package install). The provisioning script starts sshd before the large XFCE
    install, so the runtime can supervise it: `/var/lib/tagnest-provisioned` is polled for up to 30
@@ -111,6 +122,35 @@ that already exists gets `-1`, `-2`, … instead of being overwritten. Host fold
 The Linux panel's file drawer calls `workspace:list` and shows directories first. The header's live
 memory/disk/load readings come from `runtime:stats`, which runs `free`, `df` and reads
 `/proc/loadavg` inside the guest and caches the parsed result for four seconds in `LinuxRuntime`.
+
+## Phone access
+
+`RemoteAccess` is a small server in the main process. It listens on a fixed configured port (default
+47821): `127.0.0.1` in tunnel and custom modes, and the LAN interface only when the user explicitly
+selects **Home network**. The renderer, the model and the guest cannot open it; away access is an
+outbound tunnel.
+
+- **Modes.** `tunnel` starts a pinned, SHA-256-verified `cloudflared.exe` and reads the assigned
+  `https://…trycloudflare.com` address from its output; `lan` uses the computer's LAN address;
+  `custom` uses a URL supplied by the user (a named tunnel or reverse proxy they own). The desktop
+  UI shows the exact address, the pairing code and a warning when no tunnel is running.
+- **Pairing.** `POST /api/pair` requires a 6-digit code that expires after 15 minutes, is rate-limited
+  and is compared in constant time. On success it returns a 32-byte device token; only a SHA-256
+  hash is stored in `remote.json`, and each phone can be revoked individually. API requests use
+  `Authorization: Bearer`, and browsers receive an `HttpOnly`, `SameSite=Strict` session cookie at
+  pairing. The embedded desktop is loaded with that cookie, so no token appears in its URL.
+- **Surface.** The API exposes only what the mobile UI needs: health, state, send, cancel, approve,
+  retry, conversation selection and runtime start/stop. It never exposes provider keys, host paths,
+  QEMU arguments or arbitrary shell commands; every command still goes through the agent's approval
+  policy. `/desktop` serves a small HTML shell and `/vnc` upgrades to the existing token-checked
+  `VncBridge`; the guest's raw VNC port is never exposed.
+- **Lifecycle.** Enabling remote access starts the listener and, in tunnel mode, the tunnel; disabling
+  it stops both. The state is persisted and restored on app launch. While a phone is connected the
+  main process blocks system suspension and the window close button hides to the tray instead of
+  quitting. The tunnel is an outbound QUIC/HTTP/2 connection; no hosted TagNest service exists.
+- **Mobile app.** `mobile/` is a Flutter (Dart) Android client: pairing screen, chat with tool cards
+  and approvals, task list, stop/retry and a `webview_flutter` view of `/desktop`. It talks to the
+  same HTTP/WebSocket endpoints as a browser.
 
 ## Browser automation
 
@@ -177,6 +217,32 @@ The app server listens on guest loopback only. It is reachable from the guest br
 agent over SSH, not from the Windows host. Project files are ordinary files in the persistent home
 disk, so they survive VM and app restarts; they are not written to the host workspace or the
 repository.
+
+## Restore points, setup checks and diagnostics
+
+QEMU's RAM snapshot (`savevm`) is not available with WHPX: QEMU reports "State blocked due to missing
+dirty memory tracking support". `linux/checkpoint.ts` therefore implements disk-only restore points
+with QMP:
+
+1. Before an approved destructive command, main asks QMP `blockdev-snapshot-sync` for the virtio disk
+   (`node-name=disk`) to create `checkpoints/restore-<timestamp>.qcow2`. The new overlay becomes the
+   top of the chain and receives every later write.
+2. `checkpoint.json` records the overlay; the next boot uses the overlay instead of
+   `workspace.qcow2`, so a restore point survives an app restart.
+3. **Restore** stops the VM, deletes the overlay and boots the untouched parent. **Keep changes**
+   stops the VM, runs `qemu-img commit <overlay>`, deletes the overlay and boots the parent. Only one
+   restore point is kept at a time.
+
+The QMP socket is created by QEMU on a random `127.0.0.1` port and is never exposed to the renderer.
+
+`setup:status` feeds the first-run checklist: WHPX/QEMU state (with the cached acceleration probe),
+whether the base image and workspace disk exist, and whether a provider, key and model are ready.
+The checklist is advisory — every action it offers is optional and the app remains usable.
+
+`diagnostics.ts` builds a single text report from the runtime state, sanitized settings and log
+tails. It redacts API keys and tokens (through `redact.ts`) as well as the home, data and project
+paths, then writes the report wherever the user chooses in the native Save dialog. It is never
+uploaded automatically.
 
 ## Agent loop
 

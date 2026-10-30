@@ -12,6 +12,7 @@ what the design protects, what it does not, and the decisions behind it.
 | Main process | Owns QEMU, SSH keys, VNC bridge, encrypted secrets. Runs as the normal desktop user. |
 | Guest VM | Alpine Linux, unprivileged `tagnest` user, no host filesystem shares, user-mode NAT network. |
 | Agent actions | Risk classifier + explicit approval for privileged/destructive commands. |
+| Phone access | Loopback-only HTTP server, short-lived pairing code, per-device tokens, optional outbound tunnel; no raw VNC/SSH exposure. |
 
 ## What the VM isolates
 
@@ -70,6 +71,32 @@ and the host-side WebSocket bridge requires a random 48-hex-character token gene
 runtime session. Other local processes cannot attach without the token, and the renderer is the only
 client. Clipboard transfer is explicit (paste/copy buttons) and limited to text.
 
+## Phone access
+
+The phone interface is a second network entrance to the same agent, so it is deliberately narrow:
+
+- The HTTP server listens on `127.0.0.1` in tunnel and custom modes. **Home network** is the one
+  mode that deliberately binds the port on the LAN, and only after the user selects it; there is no
+  inbound router port in tunnel mode because the client connects *out* to Cloudflare. The guest has
+  no route to the server and the server cannot execute guest commands by itself.
+- Pairing needs a 6-digit code generated when remote access starts. The code expires after 15
+  minutes, is compared in constant time and is rate-limited (a global attempt budget per window). A
+  correct code returns a random 32-byte device token; the server stores only its SHA-256 hash.
+- Every API route except `/api/health`, `/api/pair` and the static desktop page requires either
+  `Authorization: Bearer <token>` or the `HttpOnly`, `SameSite=Strict` session cookie. The WebSocket
+  upgrade is authenticated the same way and then bridged to the existing random-token VNC bridge.
+  The guest's raw VNC port, SSH port and QMP socket are never exposed by this server.
+- CORS is absent, mutations require same-origin JSON or the native pairing header, and API responses
+  are `no-store`. Provider keys are never part of remote state, and remote commands go through the
+  same `AgentRuntime` approval path as the desktop UI.
+- A quick-tunnel address is public to anyone who learns it, but without a paired token it only
+  returns 401. Treat the address and pairing code as credentials. For a permanent public endpoint,
+  use your own named tunnel and keep the token private; the app cannot make a quick tunnel stable
+  across restarts.
+- The Android app stores its device token in app-private preferences. **Forget this phone** calls the
+  revoke endpoint and removes the local token. There is no TagNest account and no server-side copy
+  of the token.
+
 ## Browser automation
 
 `linux/browser.ts` starts Chromium inside the guest with `--remote-debugging-port` and talks CDP over
@@ -101,6 +128,25 @@ Windows displays the UAC prompt; TagNest does not bypass it, does not run an ele
 own, and verifies `qemu-system-x86_64` after winget returns. Cancelling UAC or a winget failure is
 reported in the panel and nothing is installed. The app only offers this on Windows when `winget` is
 available.
+
+## QEMU control socket and restore points
+
+QEMU exposes QMP on `127.0.0.1:<random>` (random per boot, `server,nowait`). It is loopback-only and
+the port is only known to the main process; the renderer and the model cannot reach it. QMP is
+unauthenticated, like the existing loopback SSH/VNC forwards, so a local process that discovers the
+port could control the VM. That is the same local trust boundary the app already relies on for
+loopback forwards.
+
+A restore point starts a copy-on-write qcow2 overlay under `%APPDATA%\TagNest\linux\checkpoints`.
+It contains guest disk data (like the main workspace disk) and is not encrypted; it is removed on
+**Restore** and merged then removed on **Keep changes**. It is never uploaded anywhere.
+
+## Diagnostics
+
+The diagnostics report is written only when the user picks a path in the native Save dialog. It
+contains versions, runtime state, sanitized settings, provider key presence flags (never values), and
+log tails. The logger and the report both run `redactSecrets`; the report additionally replaces the
+home, data and project paths with `<path>`. The VNC token is excluded entirely.
 
 ## Automatic updates
 

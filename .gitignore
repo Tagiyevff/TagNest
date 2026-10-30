@@ -26,6 +26,11 @@ ad/*.mp3
 !.env.example
 secrets.json
 
+# Android release signing material — never commit these
+mobile/android/key.properties
+mobile/android/*.jks
+mobile/android/*.keystore
+
 # VM artifacts: downloaded or generated, never versioned
 *.qcow2
 *.iso

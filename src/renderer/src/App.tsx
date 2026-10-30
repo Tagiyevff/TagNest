@@ -5,14 +5,17 @@ import type {
   AutoUpdateState,
   Conversation,
   ConversationSummary,
+  RemoteAccessState,
   RuntimeState,
   SettingsView,
+  SetupStatus,
   TaskState
 } from '@shared/types'
 import type { SettingsPatch } from '@shared/ipc'
 import { ChatPanel } from './components/ChatPanel'
 import { LinuxPanel } from './components/LinuxPanel'
 import { SettingsDialog } from './components/SettingsDialog'
+import { SetupWizard } from './components/SetupWizard'
 import { createTranslator } from './i18n'
 
 interface Toast {
@@ -36,6 +39,15 @@ export default function App(): JSX.Element {
   const [pointer, setPointer] = useState<{ x: number; y: number; at: number } | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [update, setUpdate] = useState<AutoUpdateState | null>(null)
+  const [remote, setRemote] = useState<RemoteAccessState>({
+    enabled: false,
+    phase: 'stopped',
+    mode: 'tunnel',
+    message: 'Remote access is off',
+    devices: []
+  })
+  const [setup, setSetup] = useState<SetupStatus | null>(null)
+  const [setupOpen, setSetupOpen] = useState(false)
   const activeIdRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
@@ -50,6 +62,14 @@ export default function App(): JSX.Element {
     toastTimer.current = window.setTimeout(() => {
       setToast((current) => (current?.id === item.id ? null : current))
     }, 5000)
+  }, [])
+
+  const refreshSetup = useCallback(async (): Promise<void> => {
+    try {
+      setSetup(await window.tagnest.setup.status())
+    } catch {
+      /* the wizard is optional; the panel still works without it */
+    }
   }, [])
 
   const handleAgentEvent = useCallback(
@@ -123,6 +143,7 @@ export default function App(): JSX.Element {
         setSettings(state.settings)
         setRuntime(state.runtime)
         setTask(state.task)
+        setRemote(state.remote)
         setSummaries(state.conversations)
         const activeId = state.activeConversationId ?? state.conversations[0]?.id ?? null
         if (activeId) {
@@ -133,6 +154,15 @@ export default function App(): JSX.Element {
           }
         }
         if (!disposed) setReady(true)
+        try {
+          const status = await api.setup.status()
+          if (disposed) return
+          setSetup(status)
+          const dismissed = window.localStorage.getItem('tagnest.setup.dismissed')
+          if (status.needsSetup && dismissed !== state.version) setSetupOpen(true)
+        } catch {
+          /* older preload builds do not expose setup.status */
+        }
       })
       .catch((error: unknown) => {
         if (!disposed) setFatal(error instanceof Error ? error.message : String(error))
@@ -141,11 +171,13 @@ export default function App(): JSX.Element {
     const offRuntime = api.onRuntimeState(setRuntime)
     const offAgent = api.onAgentEvent(handleAgentEvent)
     const offSettings = api.onSettings(setSettings)
+    const offRemote = api.onRemoteState(setRemote)
     return () => {
       disposed = true
       offRuntime()
       offAgent()
       offSettings()
+      offRemote()
     }
   }, [handleAgentEvent])
 
@@ -176,19 +208,22 @@ export default function App(): JSX.Element {
       const state = await window.tagnest.updateSettings(patch)
       setSettings(state.settings)
       setRuntime(state.runtime)
+      void refreshSetup()
     },
-    []
+    [refreshSetup]
   )
 
   const setApiKey = useCallback(async (provider: SettingsView['provider'], key: string): Promise<void> => {
     const state = await window.tagnest.setApiKey(provider, key)
     setSettings(state.settings)
-  }, [])
+    void refreshSetup()
+  }, [refreshSetup])
 
   const clearApiKey = useCallback(async (provider: SettingsView['provider']): Promise<void> => {
     const state = await window.tagnest.clearApiKey(provider)
     setSettings(state.settings)
-  }, [])
+    void refreshSetup()
+  }, [refreshSetup])
 
   const send = useCallback(
     async (text: string): Promise<boolean> => {
@@ -298,6 +333,33 @@ export default function App(): JSX.Element {
     })
   }, [showToast])
 
+  const createCheckpoint = useCallback((): void => {
+    void window.tagnest.runtime
+      .checkpoint()
+      .then(setRuntime)
+      .catch((error: unknown) => {
+        showToast('error', error instanceof Error ? cleanIpcError(error.message) : String(error))
+      })
+  }, [showToast])
+
+  const rollbackCheckpoint = useCallback((): void => {
+    void window.tagnest.runtime
+      .rollbackCheckpoint()
+      .then(setRuntime)
+      .catch((error: unknown) => {
+        showToast('error', error instanceof Error ? cleanIpcError(error.message) : String(error))
+      })
+  }, [showToast])
+
+  const keepCheckpoint = useCallback((): void => {
+    void window.tagnest.runtime
+      .keepCheckpoint()
+      .then(setRuntime)
+      .catch((error: unknown) => {
+        showToast('error', error instanceof Error ? cleanIpcError(error.message) : String(error))
+      })
+  }, [showToast])
+
   const installQemu = useCallback((): void => {
     void window.tagnest.runtime
       .installQemu()
@@ -305,7 +367,8 @@ export default function App(): JSX.Element {
       .catch((error: unknown) => {
         showToast('error', error instanceof Error ? cleanIpcError(error.message) : String(error))
       })
-  }, [showToast])
+      .finally(() => void refreshSetup())
+  }, [refreshSetup, showToast])
 
   if (!window.tagnest) {
     return (
@@ -369,7 +432,28 @@ export default function App(): JSX.Element {
         onRestart={restartRuntime}
         onOpenLogs={() => void window.tagnest.runtime.openLogFolder()}
         onInstallQemu={installQemu}
+        onCreateCheckpoint={createCheckpoint}
+        onRollbackCheckpoint={rollbackCheckpoint}
+        onKeepCheckpoint={keepCheckpoint}
       />
+      {setupOpen && setup ? (
+        <SetupWizard
+          t={t}
+          status={setup}
+          installing={runtime.qemuInstalling}
+          installMessage={runtime.qemuInstallMessage}
+          onClose={() => setSetupOpen(false)}
+          onDismissForever={() => {
+            window.localStorage.setItem('tagnest.setup.dismissed', version)
+            setSetupOpen(false)
+          }}
+          onInstallQemu={installQemu}
+          onOpenSettings={() => {
+            setSetupOpen(false)
+            setSettingsOpen(true)
+          }}
+        />
+      ) : null}
       {settingsOpen ? (
         <SettingsDialog
           key={settings.provider}
@@ -377,6 +461,7 @@ export default function App(): JSX.Element {
           version={version}
           settings={settings}
           runtime={runtime}
+          remote={remote}
           onClose={() => setSettingsOpen(false)}
           onUpdate={updateSettings}
           onSetKey={setApiKey}

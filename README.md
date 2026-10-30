@@ -3,7 +3,7 @@
 **A local-first AI workspace with a real Linux desktop inside it.**
 
 [![CI](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml/badge.svg)](https://github.com/Tagiyevff/TagNest/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c&v=0.5.0)](https://github.com/Tagiyevff/TagNest/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Tagiyevff/TagNest?color=11181c&v=0.7.0)](https://github.com/Tagiyevff/TagNest/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-11181c.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-11181c)](README.md#requirements)
 
@@ -48,10 +48,27 @@ offers the slow software-emulation path.
 Building from source instead: see [Quick start (development)](#quick-start-development) and
 [docs/RELEASING.md](docs/RELEASING.md).
 
+## Install (Android phone)
+
+Download `TagNest-mobile-<version>.apk` from the same
+[Releases page](https://github.com/Tagiyevff/TagNest/releases/latest) and install it (Android will
+ask you to allow installs from your browser/file manager because the APK is sideloaded).
+
+1. On the computer: **Settings → Phone access**, choose **Cloudflare quick tunnel** (works away
+   from home, no account) and start it. Copy the address it shows.
+2. In the app: enter that address, the 6-digit pairing code and a name for the phone.
+3. Chat, approve commands and open the **Desktop** tab for the live Linux screen. Press the keyboard
+   button above the desktop to send real key input to the guest.
+
+TagNest keeps running in the system tray after you close its window while phone access is on, and it
+blocks system sleep, so the phone keeps working. The quick-tunnel address changes when the computer
+or TagNest restarts; use **Home network** on the same Wi-Fi or a **Custom URL** from a stable tunnel
+for a permanent address. Full details: [mobile/README.md](mobile/README.md).
+
 ## Status
 
-Early release (`0.5.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
-settings are implemented and were exercised against a real VM. Typecheck, lint, 97 unit tests, the
+Early release (`0.7.0`). The Linux runtime, embedded desktop, agent tool loop, approvals and
+settings are implemented and were exercised against a real VM. Typecheck, lint, 119 unit tests, the
 production build and the real-VM smoke test pass. Provider adapters were tested against local mocks
 of their real HTTP APIs, and the OpenAI-compatible path was additionally driven end to end against
 a local router that forwards to a real hosted model — tool calls, file creation and read-back in the
@@ -60,12 +77,20 @@ guest browser — was tested against a mock OpenAI-compatible server driving rea
 real internet requests. See [docs/VALIDATION.md](docs/VALIDATION.md) for the exact results, including
 what was **not** verified.
 
-`0.5.0` gives the agent a real browser: one visible Chromium window it can navigate, read, click and
-type in — with a screenshot tool for vision models — plus a one-click QEMU install and in-app
-automatic updates. `0.4.0` made model selection automatic: each provider's real model list is loaded
-into a dropdown (right after the API key is saved and on **Refresh**), and OpenRouter gets a
-**Free — Automatic** mode that selects and verifies a currently working free model, falling back to
-the next one when a model refuses direct API traffic. See [CHANGELOG.md](CHANGELOG.md).
+`0.7.0` adds **phone access**: a real Flutter Android app that pairs with the desktop, chats with
+the same agent, approves commands and embeds the live Linux desktop; remote access runs over a
+Cloudflare quick tunnel, the home network or your own stable URL, with per-device tokens and no
+account. The desktop app stays in the tray while a phone is connected and blocks sleep.
+
+`0.6.0` added a first-run checklist, automatic **restore points** before destructive agent commands
+(disk-only, because WHPX cannot save RAM state), resumable Linux image downloads with real progress
+and speed, and a redacted diagnostics report for support. `0.5.0` gave the agent a real browser: one
+visible Chromium window it can navigate, read, click and type in — with a screenshot tool for vision
+models — plus a one-click QEMU install and in-app automatic updates. `0.4.0` made model selection
+automatic: each provider's real model list is loaded into a dropdown (right after the API key is
+saved and on **Refresh**), and OpenRouter gets a **Free — Automatic** mode that selects and verifies
+a currently working free model, falling back to the next one when a model refuses direct API
+traffic. See [CHANGELOG.md](CHANGELOG.md).
 
 ## What works
 
@@ -90,6 +115,13 @@ the next one when a model refuses direct API traffic. See [CHANGELOG.md](CHANGEL
   fresh model starts useful instead of guessing.
 - Embedded TigerVNC → WebSocket → noVNC display with mouse, keyboard, clipboard paste/copy and
   viewport scaling.
+- **Phone access.** A pairing-code based remote server (HTTP + authenticated noVNC WebSocket) with
+  three modes: Cloudflare quick tunnel (no account, works anywhere), home network, or a custom
+  stable URL. Each phone gets its own revocable token, pairing is rate-limited, and turning remote
+  access off stops the listener and the tunnel. The **Flutter Android app** (`mobile/`) is built and
+  attached to every release; it has chat, approvals, task history, stop/retry and the embedded
+  desktop with pointer and keyboard input. The desktop app moves to the system tray when its window
+  is closed while phone access is on.
 - **The agent can see the screen.** `desktop_screenshot` captures the real guest desktop and hands
   the PNG to a vision-capable model, so it can read a page, find a button and click it — verified
   end to end against a live model (see [docs/VALIDATION.md](docs/VALIDATION.md)).
@@ -130,6 +162,19 @@ the next one when a model refuses direct API traffic. See [CHANGELOG.md](CHANGEL
 - **Settings → About:** checks the latest GitHub release and links to it when a newer version exists.
 - English and Azerbaijani UI.
 - Configurable VM memory/CPU count/disk size and automatic startup.
+- **First-run checklist:** checks hardware virtualization, QEMU and the model configuration, offers
+  the one-click QEMU install there, and explains the Windows feature needed for WHPX. It can be
+  dismissed for the current version.
+- **Restore points:** before an approved destructive command, the agent starts a live qcow2 snapshot
+  of the Linux disk. The panel then offers **Restore** (discard everything written since the
+  snapshot) and **Keep changes** (merge the snapshot and continue). Restore points survive an app
+  restart.
+- **Resumable Linux image download:** progress, speed and ETA in the panel; Stop cancels the
+  download; if it is interrupted, the next start continues with an HTTP Range request instead of
+  downloading the 150 MB image again. Bundled images are checksum-verified before use.
+- **Diagnostics report:** Settings → About and the Linux panel save a text report with versions,
+  runtime state, sanitized settings, provider key presence (never values) and log tails. API keys,
+  the VNC token and the user's home path are removed.
 - **One-click QEMU install** when the host has no emulator (winget + the Windows UAC prompt), and
   **automatic updates** for the installed build (background download, install on quit, status in
   the chat and Settings → About).
@@ -318,6 +363,11 @@ npm run lint
 npm run smoke:linux  # boots the real VM and verifies the runtime end to end
 npm run smoke:agent  # agent loop against a scripted OpenAI-compatible endpoint: approvals, file
                      # tools, web_search / web_fetch / open_url against the real guest
+
+cd mobile
+flutter analyze      # Dart analyzer, zero issues
+flutter test         # pairing screen, URL normalization, remote state parsing
+flutter build apk --release
 ```
 
 `smoke:linux` downloads/provisions on first use (`TAGNEST_SMOKE_CLEAN=1` to force a fresh
@@ -347,12 +397,29 @@ file persisted and checks that no Windows host paths are mounted. The recorded r
   panicked under TCG on the development machine, so software emulation is not a reliable fallback.
   TagNest reports the problem and the serial log instead of pretending it works. Enabling Windows
   Hypervisor Platform is the supported fix.
-- QEMU is expected on the host; the repo does not redistribute QEMU binaries. An installer has to
-  ship them separately or install QEMU as a prerequisite.
-- The NSIS installer builds (`release/TagNest-0.5.0-x64.exe`, ≈120 MB). The packaged `win-unpacked`
-  app was launched for 0.3.0; later packages use the same config but install/uninstall was not
-  exercised on a clean Windows machine. It is unsigned, so Windows SmartScreen will warn, and
+- QEMU is expected on the host; the repo does not redistribute QEMU binaries. The app installs it
+  with winget on request, and the first-run checklist offers that too.
+- **Restore points are disk-only and require a reboot to apply.** WHPX refuses QEMU RAM snapshots
+  (`savevm` reports missing dirty-memory-tracking support), so a restore point protects the Linux
+  filesystem, not running processes. Restoring or keeping the changes stops the VM, moves/merges the
+  overlay and boots it again (about 15–45 s in the real-VM test). Only one restore point is kept at
+  a time.
+- **Quick-tunnel addresses are temporary.** Cloudflare quick tunnels do not need an account but get a
+  new `https://…trycloudflare.com` name whenever the tunnel restarts, so after a computer reboot the
+  phone must be re-pointed. Keep TagNest running (it stays in the tray) or use Home network / Custom
+  URL with a named Cloudflare Tunnel for a permanent address. A remote session also needs the
+  computer awake and TagNest running; phone access blocks app suspension but a laptop lid can still
+  suspend the machine depending on its power plan.
+- **The Android app is sideloaded.** It is not on Google Play, release builds are signed with the
+  project's release key, and Android will warn about installing from outside the store. iOS is not
+  built.
+- The NSIS installer builds (`release/TagNest-0.7.0-x64.exe`, ≈120 MB). The packaged `win-unpacked`
+  app was launched for earlier versions (it reported its version and opened the checklist) but install/uninstall was
+  not exercised on a clean Windows machine. It is unsigned, so Windows SmartScreen will warn, and
   automatic updates from an unsigned build still show that warning when the installer runs.
+- The one-click QEMU install was not executed in validation because QEMU was already installed. The
+  fixed winget command, UAC prompt and post-install verification are implemented and typechecked,
+  and the checklist offers the same path; see [docs/VALIDATION.md](docs/VALIDATION.md).
 - Drag & drop was verified with a real DOM drop event (file bytes through the preload bridge and
   SFTP), not by dragging from Explorer with the OS pointer. The download flow's dialog is covered by
   a unit test with a mocked dialog; the native Save dialog was not clicked in the validation run.

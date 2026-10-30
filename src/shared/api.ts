@@ -5,12 +5,16 @@ import type {
   AutoUpdateState,
   Conversation,
   ConversationSummary,
+  DiagnosticsResult,
   GuestStats,
   ProviderId,
   ProviderModelsResult,
   ProviderTestResult,
+  RemoteAccessState,
+  RemoteMode,
   RuntimeState,
   SettingsView,
+  SetupStatus,
   UpdateInfo,
   WorkspaceDownloadResult,
   WorkspaceListing,
@@ -50,6 +54,9 @@ export interface TagNestApi {
     openLogFolder: () => Promise<{ ok: boolean }>
     stats: () => Promise<GuestStats | null>
     installQemu: () => Promise<RuntimeState>
+    checkpoint: () => Promise<RuntimeState>
+    rollbackCheckpoint: () => Promise<RuntimeState>
+    keepCheckpoint: () => Promise<RuntimeState>
   }
   files: {
     list: (path?: string) => Promise<WorkspaceListing>
@@ -60,12 +67,23 @@ export interface TagNestApi {
     }) => Promise<WorkspaceTransfer>
     download: (path: string) => Promise<WorkspaceDownloadResult>
   }
+  setup: {
+    status: () => Promise<SetupStatus>
+  }
   provider: {
     test: () => Promise<ProviderTestResult>
     models: () => Promise<ProviderModelsResult>
   }
+  remote: {
+    getState: () => Promise<RemoteAccessState>
+    enable: (input: { mode: RemoteMode; customUrl?: string }) => Promise<RemoteAccessState>
+    disable: () => Promise<RemoteAccessState>
+    regenerateCode: () => Promise<RemoteAccessState>
+    revokeDevice: (id: string) => Promise<RemoteAccessState>
+  }
   app: {
     checkUpdates: () => Promise<UpdateInfo>
+    diagnostics: () => Promise<DiagnosticsResult>
   }
   updates: {
     state: () => Promise<AutoUpdateState>
@@ -76,5 +94,6 @@ export interface TagNestApi {
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void
   onSettings: (listener: (settings: SettingsView) => void) => () => void
   onUpdateState: (listener: (state: AutoUpdateState) => void) => () => void
+  onRemoteState: (listener: (state: RemoteAccessState) => void) => () => void
   onApprovalRequest?: (listener: (request: ApprovalRequest) => void) => () => void
 }

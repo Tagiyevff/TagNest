@@ -14,7 +14,8 @@ const SETTINGS: AppSettings = {
   cpus: 2,
   diskGB: 20,
   autoStartLinux: true,
-  approveSafeCommands: true
+  approveSafeCommands: true,
+  launchAtLogin: false
 }
 
 function stores(options: { apiKey?: string; settings?: Partial<AppSettings> } = {}): {

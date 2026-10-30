@@ -34,19 +34,33 @@ const api: TagNestApi = {
     logs: () => ipcRenderer.invoke(IPC.runtimeLogs),
     openLogFolder: () => ipcRenderer.invoke(IPC.appOpenLogs),
     stats: () => ipcRenderer.invoke(IPC.runtimeStats),
-    installQemu: () => ipcRenderer.invoke(IPC.runtimeInstallQemu)
+    installQemu: () => ipcRenderer.invoke(IPC.runtimeInstallQemu),
+    checkpoint: () => ipcRenderer.invoke(IPC.runtimeCheckpoint),
+    rollbackCheckpoint: () => ipcRenderer.invoke(IPC.runtimeRollbackCheckpoint),
+    keepCheckpoint: () => ipcRenderer.invoke(IPC.runtimeKeepCheckpoint)
   },
   files: {
     list: (path) => ipcRenderer.invoke(IPC.workspaceList, { path }),
     upload: (input) => ipcRenderer.invoke(IPC.workspaceUpload, input),
     download: (path) => ipcRenderer.invoke(IPC.workspaceDownload, { path })
   },
+  setup: {
+    status: () => ipcRenderer.invoke(IPC.setupStatus)
+  },
   provider: {
     test: () => ipcRenderer.invoke(IPC.providerTest),
     models: () => ipcRenderer.invoke(IPC.providerModels)
   },
+  remote: {
+    getState: () => ipcRenderer.invoke(IPC.remoteGetState),
+    enable: (input) => ipcRenderer.invoke(IPC.remoteEnable, input),
+    disable: () => ipcRenderer.invoke(IPC.remoteDisable),
+    regenerateCode: () => ipcRenderer.invoke(IPC.remoteRegenerateCode),
+    revokeDevice: (id) => ipcRenderer.invoke(IPC.remoteRevokeDevice, { id })
+  },
   app: {
-    checkUpdates: () => ipcRenderer.invoke(IPC.appCheckUpdates)
+    checkUpdates: () => ipcRenderer.invoke(IPC.appCheckUpdates),
+    diagnostics: () => ipcRenderer.invoke(IPC.appDiagnostics)
   },
   updates: {
     state: () => ipcRenderer.invoke(IPC.appUpdateState),
@@ -56,7 +70,8 @@ const api: TagNestApi = {
   onRuntimeState: (listener) => subscribe(IPC.eventRuntime, listener),
   onAgentEvent: (listener) => subscribe(IPC.eventAgent, listener),
   onSettings: (listener) => subscribe(IPC.eventSettings, listener),
-  onUpdateState: (listener) => subscribe(IPC.eventUpdate, listener)
+  onUpdateState: (listener) => subscribe(IPC.eventUpdate, listener),
+  onRemoteState: (listener) => subscribe(IPC.eventRemote, listener)
 }
 
 contextBridge.exposeInMainWorld('tagnest', api)

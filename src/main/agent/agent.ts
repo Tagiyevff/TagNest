@@ -58,6 +58,7 @@ export class AgentRuntime {
 
   private emit: (event: AgentEvent) => void = () => undefined
   private settingsChanged: (settings: SettingsView) => void = () => undefined
+  private readonly listeners = new Set<(event: AgentEvent) => void>()
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -67,7 +68,28 @@ export class AgentRuntime {
   ) {}
 
   setEmitter(emit: (event: AgentEvent) => void): void {
-    this.emit = emit
+    this.emit = (event) => {
+      emit(event)
+      for (const listener of this.listeners) {
+        try {
+          listener(event)
+        } catch (error) {
+          logger.warn('agent', 'an event listener failed', error)
+        }
+      }
+    }
+  }
+
+  /** Additional in-process subscribers (the remote access server). */
+  addListener(listener: (event: AgentEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  /** The approval currently blocking the agent, if any. */
+  getPendingApproval(): ApprovalRequest | null {
+    const first = this.pendingApprovals.values().next().value as PendingApproval | undefined
+    return first ? { ...first.request } : null
   }
 
   setSettingsEmitter(emit: (settings: SettingsView) => void): void {
@@ -424,6 +446,20 @@ export class AgentRuntime {
       }
       view.state = 'running'
       this.persistMessage(conversation, assistant)
+    }
+
+    // Destructive operations get a real QEMU restore point first, so the whole
+    // workspace can be rolled back if the command does more than expected.
+    if (description.assessment?.risk === 'destructive') {
+      this.setTask({ status: 'running', activity: 'Saving a restore point before the change' })
+      const checkpointState = await this.runtime.createCheckpoint('before a destructive command')
+      if (checkpointState.checkpoint?.error) {
+        this.emit({
+          type: 'notice',
+          level: 'error',
+          message: `Could not create a Linux restore point: ${checkpointState.checkpoint.error}`
+        })
+      }
     }
 
     this.setTask({

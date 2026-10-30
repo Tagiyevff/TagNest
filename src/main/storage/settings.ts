@@ -45,6 +45,7 @@ export class SettingsStore {
     if (patch.language) next.language = patch.language
     if (typeof patch.autoStartLinux === 'boolean') next.autoStartLinux = patch.autoStartLinux
     if (typeof patch.approveSafeCommands === 'boolean') next.approveSafeCommands = patch.approveSafeCommands
+    if (typeof patch.launchAtLogin === 'boolean') next.launchAtLogin = patch.launchAtLogin
 
     if (typeof patch.memoryMB === 'number') next.memoryMB = clamp(patch.memoryMB, 1024, 16384)
     if (typeof patch.cpus === 'number') next.cpus = clamp(patch.cpus, 1, 8)
@@ -107,7 +108,8 @@ export class SettingsStore {
       cpus: clamp(Number(raw.cpus) || DEFAULT_SETTINGS.cpus, 1, 8),
       diskGB: clamp(Number(raw.diskGB) || DEFAULT_SETTINGS.diskGB, 8, 128),
       autoStartLinux: raw.autoStartLinux ?? DEFAULT_SETTINGS.autoStartLinux,
-      approveSafeCommands: raw.approveSafeCommands ?? DEFAULT_SETTINGS.approveSafeCommands
+      approveSafeCommands: raw.approveSafeCommands ?? DEFAULT_SETTINGS.approveSafeCommands,
+      launchAtLogin: raw.launchAtLogin ?? DEFAULT_SETTINGS.launchAtLogin
     }
   }
 }

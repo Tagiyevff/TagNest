@@ -8,6 +8,8 @@ import type {
   ProviderId,
   ProviderModelsResult,
   ProviderTestResult,
+  RemoteAccessState,
+  RemoteMode,
   RuntimeState,
   SettingsView,
   UpdateInfo
@@ -20,6 +22,7 @@ interface SettingsDialogProps {
   version: string
   settings: SettingsView
   runtime: RuntimeState
+  remote: RemoteAccessState
   onClose: () => void
   onUpdate: (patch: {
     provider?: ProviderId
@@ -32,6 +35,7 @@ interface SettingsDialogProps {
     diskGB?: number
     autoStartLinux?: boolean
     approveSafeCommands?: boolean
+    launchAtLogin?: boolean
   }) => Promise<void>
   onSetKey: (provider: ProviderId, key: string) => Promise<void>
   onClearKey: (provider: ProviderId) => Promise<void>
@@ -41,11 +45,19 @@ interface SettingsDialogProps {
 const MEMORY_OPTIONS = [2048, 3072, 4096, 6144, 8192]
 const CPU_OPTIONS = [1, 2, 3, 4]
 const DISK_OPTIONS = [12, 20, 32, 48]
+const REMOTE_MODE_LABELS: Record<
+  RemoteMode,
+  { title: 'remoteModeTunnel' | 'remoteModeLan' | 'remoteModeCustom'; hint: 'remoteModeTunnelHint' | 'remoteModeLanHint' | 'remoteModeCustomHint' }
+> = {
+  tunnel: { title: 'remoteModeTunnel', hint: 'remoteModeTunnelHint' },
+  lan: { title: 'remoteModeLan', hint: 'remoteModeLanHint' },
+  custom: { title: 'remoteModeCustom', hint: 'remoteModeCustomHint' }
+}
 const FREE_MODEL_VALUE = '__tagnest_free__'
 const CUSTOM_MODEL_VALUE = '__tagnest_custom__'
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
-  const { t, settings, runtime } = props
+  const { t, settings, runtime, remote } = props
   const provider = settings.providers.find((entry) => entry.id === settings.provider)
   const requiresApiKey = Boolean(provider?.requiresApiKey)
   const providerLabel = provider?.label ?? settings.provider
@@ -67,6 +79,12 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const [modelsError, setModelsError] = useState('')
   const [modelsNote, setModelsNote] = useState('')
   const [showManual, setShowManual] = useState(false)
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState('')
+  const [remoteMode, setRemoteMode] = useState<RemoteMode>(remote.mode)
+  const [remoteUrl, setRemoteUrl] = useState(remote.customUrl ?? '')
+  const [remoteBusy, setRemoteBusy] = useState(false)
+  const [remoteNotice, setRemoteNotice] = useState('')
+  const [now, setNow] = useState(0)
 
   const applyCatalog = useCallback(
     (result: ProviderModelsResult): void => {
@@ -238,6 +256,16 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     }
   }
 
+  const saveDiagnostics = async (): Promise<void> => {
+    setDiagnosticsStatus('')
+    try {
+      const result = await window.tagnest.app.diagnostics()
+      if (result.saved) setDiagnosticsStatus(t('diagnosticsSaved'))
+    } catch (caught) {
+      setDiagnosticsStatus(cleanError(caught))
+    }
+  }
+
   const checkAutoUpdate = async (): Promise<void> => {
     setCheckingUpdate(true)
     setUpdateError('')
@@ -249,6 +277,45 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       setCheckingUpdate(false)
     }
   }
+
+  const remoteAction = async (action: () => Promise<unknown>, message: string): Promise<void> => {
+    setRemoteBusy(true)
+    setRemoteNotice('')
+    try {
+      await action()
+      setRemoteNotice(message)
+    } catch (caught) {
+      setRemoteNotice(cleanError(caught))
+    } finally {
+      setRemoteBusy(false)
+    }
+  }
+
+  const startRemote = (): void => {
+    void remoteAction(
+      () => window.tagnest.remote.enable({ mode: remoteMode, customUrl: remoteUrl }),
+      t('saved')
+    )
+  }
+
+  const stopRemote = (): void => {
+    void remoteAction(() => window.tagnest.remote.disable(), t('remoteStopped'))
+  }
+
+  const copyRemoteUrl = async (): Promise<void> => {
+    if (!remote.url) return
+    try {
+      await navigator.clipboard.writeText(remote.url)
+      setRemoteNotice(t('remoteCopied'))
+    } catch {
+      setRemoteNotice(remote.url)
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     const api = window.tagnest
@@ -267,6 +334,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     }
   }, [])
 
+  const pairingExpired = Boolean(remote.pairingExpiresAt && now > remote.pairingExpiresAt)
   const catalogModels = catalog?.models ?? []
   const currentInCatalog = catalogModels.some((entry) => entry.id === model)
   const activeOption =
@@ -535,6 +603,157 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             <p className="field-note">{t('persistenceNote')}</p>
           </section>
 
+          <section className="settings-section remote-section">
+            <h3>{t('phoneAccess')}</h3>
+            <p className="field-note">{t('phoneAccessHint')}</p>
+            <div className={`remote-state ${remote.phase}`}>
+              <span className="remote-dot" />
+              <span>{remote.message}</span>
+            </div>
+            {remote.url ? (
+              <div className="remote-url">
+                <code>{remote.url}</code>
+                <button type="button" className="button ghost small" onClick={() => void copyRemoteUrl()}>
+                  {t('remoteCopy')}
+                </button>
+              </div>
+            ) : null}
+            {remote.error ? <p className="settings-error">{remote.error}</p> : null}
+            <div className="remote-modes">
+              {(Object.keys(REMOTE_MODE_LABELS) as RemoteMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`remote-mode ${remoteMode === mode ? 'active' : ''}`}
+                  disabled={remoteBusy}
+                  onClick={() => setRemoteMode(mode)}
+                >
+                  <strong>{t(REMOTE_MODE_LABELS[mode].title)}</strong>
+                  <span>{t(REMOTE_MODE_LABELS[mode].hint)}</span>
+                </button>
+              ))}
+            </div>
+            {remoteMode === 'custom' ? (
+              <>
+                <label className="field">
+                  <span>{t('remoteCustomUrl')}</span>
+                  <input
+                    type="url"
+                    value={remoteUrl}
+                    spellCheck={false}
+                    placeholder="https://nest.example.com"
+                    onChange={(event) => setRemoteUrl(event.target.value)}
+                  />
+                </label>
+                <p className="field-note">{t('remoteCustomHint')}</p>
+              </>
+            ) : null}
+            {remote.phase === 'running' && remote.pairingCode ? (
+              <div className="pairing-card">
+                <div>
+                  <span className="field-label">{t('remotePairingTitle')}</span>
+                  <strong className="pairing-code">{remote.pairingCode}</strong>
+                  <p className="field-note">
+                    {pairingExpired ? t('remoteCodeExpired') : t('remotePairingHint')}
+                    {!pairingExpired && remote.pairingExpiresAt
+                      ? ` ${t('remoteExpires', {
+                          time: new Date(remote.pairingExpiresAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                        })}`
+                      : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={remoteBusy}
+                  onClick={() =>
+                    void remoteAction(() => window.tagnest.remote.regenerateCode(), t('remoteCodeReady'))
+                  }
+                >
+                  {t('remoteRegenerate')}
+                </button>
+              </div>
+            ) : remote.phase === 'running' ? (
+              <div className="pairing-card">
+                <div>
+                  <span className="field-label">{t('remotePairingTitle')}</span>
+                  <p className="field-note">{t('remoteNoCode')}</p>
+                </div>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={remoteBusy}
+                  onClick={() =>
+                    void remoteAction(() => window.tagnest.remote.regenerateCode(), t('remoteCodeReady'))
+                  }
+                >
+                  {t('remoteRegenerate')}
+                </button>
+              </div>
+            ) : null}
+            <div className="remote-devices">
+              <span className="field-label">{t('remoteDevices')}</span>
+              {remote.devices.length === 0 ? (
+                <p className="field-note">{t('remoteNoDevices')}</p>
+              ) : (
+                remote.devices.map((device) => (
+                  <div className="remote-device" key={device.id}>
+                    <span>
+                      <strong>{device.name}</strong>
+                      <em>
+                        {device.lastSeenAt
+                          ? t('remoteLastSeen', { time: new Date(device.lastSeenAt).toLocaleString() })
+                          : t('remoteNeverSeen')}
+                      </em>
+                    </span>
+                    <button
+                      type="button"
+                      className="link-button danger-text"
+                      disabled={remoteBusy}
+                      onClick={() =>
+                        void remoteAction(() => window.tagnest.remote.revokeDevice(device.id), t('remoteRevoked'))
+                      }
+                    >
+                      {t('remoteRevoke')}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="remote-actions">
+              <button
+                type="button"
+                className="button solid"
+                disabled={remoteBusy || remote.phase === 'starting'}
+                onClick={startRemote}
+              >
+                {remote.phase === 'running'
+                  ? t('remoteRestart')
+                  : remote.phase === 'error'
+                    ? t('remoteRetry')
+                    : t('remoteStart')}
+              </button>
+              {remote.enabled ? (
+                <button type="button" className="button ghost" disabled={remoteBusy} onClick={stopRemote}>
+                  {t('remoteStop')}
+                </button>
+              ) : null}
+            </div>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={settings.launchAtLogin}
+                onChange={(event) => void run(() => props.onUpdate({ launchAtLogin: event.target.checked }), t('saved'))}
+              />
+              <span>{t('launchAtLogin')}</span>
+            </label>
+            <p className="field-note">{t('launchAtLoginHint')}</p>
+            <p className="field-note">{remoteNotice || t('remotePrivacy')}</p>
+          </section>
+
           <section className="settings-section">
             <h3>{t('about')}</h3>
             <div className="about-row">
@@ -606,6 +825,13 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 ) : null}
               </div>
             ) : null}
+            <div className="about-row">
+              <span className="field-label">{t('diagnostics')}</span>
+              <button type="button" className="button ghost" onClick={() => void saveDiagnostics()}>
+                {t('diagnosticsSave')}
+              </button>
+            </div>
+            <p className="field-note">{diagnosticsStatus || t('diagnosticsHint')}</p>
           </section>
 
           <section className="settings-section compact">

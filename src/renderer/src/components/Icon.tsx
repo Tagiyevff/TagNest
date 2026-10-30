@@ -12,6 +12,7 @@ export type IconName =
   | 'maximize'
   | 'minimize'
   | 'clipboard'
+  | 'history'
   | 'close'
   | 'chevron'
   | 'check'
@@ -60,6 +61,13 @@ const paths: Record<IconName, JSX.Element> = {
     <>
       <rect x="3.4" y="2.8" width="9.2" height="11" rx="1.6" />
       <path d="M6 2.8V2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v.8H6Z" />
+    </>
+  ),
+  history: (
+    <>
+      <path d="M2.6 8a5.4 5.4 0 1 0 1.6-3.8" />
+      <path d="M2.4 2.6v3h3" />
+      <path d="M8 4.9V8l2.2 1.4" />
     </>
   ),
   close: <path d="m3.6 3.6 8.8 8.8M12.4 3.6l-8.8 8.8" />,

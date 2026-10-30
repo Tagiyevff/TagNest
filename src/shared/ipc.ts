@@ -25,7 +25,8 @@ export const settingsPatchSchema = z
     cpus: z.number().int().min(1).max(8).optional(),
     diskGB: z.number().int().min(8).max(128).optional(),
     autoStartLinux: z.boolean().optional(),
-    approveSafeCommands: z.boolean().optional()
+    approveSafeCommands: z.boolean().optional(),
+    launchAtLogin: z.boolean().optional()
   })
   .strict()
 
@@ -84,6 +85,15 @@ export const workspaceUploadSchema = z
 
 export const workspaceDownloadSchema = z.object({ path: z.string().min(1).max(500) }).strict()
 
+export const remoteEnableSchema = z
+  .object({
+    mode: z.enum(['tunnel', 'lan', 'custom']),
+    customUrl: z.string().trim().max(500).optional()
+  })
+  .strict()
+
+export type RemoteEnableInput = z.infer<typeof remoteEnableSchema>
+
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'openai',
   model: 'gpt-4.1-mini',
@@ -94,7 +104,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cpus: 2,
   diskGB: 20,
   autoStartLinux: true,
-  approveSafeCommands: true
+  approveSafeCommands: true,
+  launchAtLogin: false
 }
 
 export function isLanguage(value: string | undefined): value is Language {
